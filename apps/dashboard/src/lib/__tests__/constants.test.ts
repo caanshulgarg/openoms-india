@@ -1,0 +1,265 @@
+import { describe, it, expect } from "vitest";
+import {
+  ORDER_STATUSES,
+  ORDER_TRANSITIONS,
+  SHIPMENT_STATUSES,
+  SHIPMENT_TRANSITIONS,
+  RETURN_STATUSES,
+  RETURN_TRANSITIONS,
+  INTEGRATION_STATUSES,
+  ROLES,
+  ORDER_SOURCES,
+  PAYMENT_STATUSES,
+  PAYMENT_METHODS,
+  SHIPMENT_PROVIDERS,
+  INTEGRATION_PROVIDERS,
+  ORDER_SOURCE_LABELS,
+  SHIPMENT_PROVIDER_LABELS,
+  INTEGRATION_PROVIDER_LABELS,
+  INVOICE_STATUS_MAP,
+  INVOICE_TYPE_LABELS,
+  AUTOMATION_TRIGGER_EVENTS,
+  AUTOMATION_TRIGGER_LABELS,
+  AUTOMATION_ACTION_TYPES,
+  AUTOMATION_ACTION_LABELS,
+  DROPSHIP_STATUSES,
+  LOYALTY_STATUSES,
+  STOCKTAKE_STATUSES,
+  RECURRING_ORDER_STATUSES,
+  WAREHOUSE_DOCUMENT_STATUSES,
+  PICK_PACK_STATUSES,
+  REPRICING_RULE_STATUSES,
+} from "@/lib/constants";
+import enStatusMessages from "../../../messages/en/statuses.json";
+import plStatusMessages from "../../../messages/pl/statuses.json";
+
+describe("ORDER_STATUSES", () => {
+  it("has all expected status keys", () => {
+    const expectedKeys = [
+      "new", "confirmed", "processing", "ready_to_ship",
+      "shipped", "in_transit", "out_for_delivery", "delivered",
+      "completed", "on_hold", "cancelled", "refunded",
+    ];
+    for (const key of expectedKeys) {
+      expect(ORDER_STATUSES).toHaveProperty(key);
+    }
+  });
+
+  it("each status has label and color", () => {
+    for (const [, value] of Object.entries(ORDER_STATUSES)) {
+      expect(value).toHaveProperty("label");
+      expect(value).toHaveProperty("color");
+      expect(typeof value.label).toBe("string");
+      expect(typeof value.color).toBe("string");
+      expect(value.label.length).toBeGreaterThan(0);
+      expect(value.color.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("ORDER_TRANSITIONS", () => {
+  it("has transitions for all order statuses", () => {
+    for (const key of Object.keys(ORDER_STATUSES)) {
+      expect(ORDER_TRANSITIONS).toHaveProperty(key);
+      expect(Array.isArray(ORDER_TRANSITIONS[key])).toBe(true);
+    }
+  });
+
+  it("refunded has no transitions (terminal state)", () => {
+    expect(ORDER_TRANSITIONS.refunded).toEqual([]);
+  });
+
+  it("new can transition to confirmed, cancelled, on_hold", () => {
+    expect(ORDER_TRANSITIONS.new).toContain("confirmed");
+    expect(ORDER_TRANSITIONS.new).toContain("cancelled");
+    expect(ORDER_TRANSITIONS.new).toContain("on_hold");
+  });
+});
+
+describe("SHIPMENT_STATUSES", () => {
+  it("has expected keys", () => {
+    const expectedKeys = [
+      "created", "label_ready", "picked_up", "in_transit",
+      "out_for_delivery", "delivered", "returned", "failed",
+    ];
+    for (const key of expectedKeys) {
+      expect(SHIPMENT_STATUSES).toHaveProperty(key);
+    }
+  });
+
+  it("each status has label and color", () => {
+    for (const [, value] of Object.entries(SHIPMENT_STATUSES)) {
+      expect(value).toHaveProperty("label");
+      expect(value).toHaveProperty("color");
+    }
+  });
+});
+
+describe("SHIPMENT_TRANSITIONS", () => {
+  it("returned has no transitions (terminal state)", () => {
+    expect(SHIPMENT_TRANSITIONS.returned).toEqual([]);
+  });
+});
+
+describe("RETURN_STATUSES", () => {
+  it("has expected keys", () => {
+    const expectedKeys = ["requested", "approved", "received", "refunded", "rejected", "cancelled"];
+    for (const key of expectedKeys) {
+      expect(RETURN_STATUSES).toHaveProperty(key);
+    }
+  });
+});
+
+describe("RETURN_TRANSITIONS", () => {
+  it("refunded has no transitions (terminal state)", () => {
+    expect(RETURN_TRANSITIONS.refunded).toEqual([]);
+  });
+
+  it("rejected has no transitions (terminal state)", () => {
+    expect(RETURN_TRANSITIONS.rejected).toEqual([]);
+  });
+});
+
+describe("INTEGRATION_STATUSES", () => {
+  it("has active, inactive, and error statuses", () => {
+    expect(INTEGRATION_STATUSES).toHaveProperty("active");
+    expect(INTEGRATION_STATUSES).toHaveProperty("inactive");
+    expect(INTEGRATION_STATUSES).toHaveProperty("error");
+  });
+});
+
+describe("ROLES", () => {
+  it("has owner, admin, and member", () => {
+    expect(ROLES).toHaveProperty("owner");
+    expect(ROLES).toHaveProperty("admin");
+    expect(ROLES).toHaveProperty("member");
+  });
+
+  it("has localized labels for every system role", () => {
+    for (const role of Object.values(ROLES)) {
+      expect(enStatusMessages.roles).toHaveProperty(role);
+      expect(plStatusMessages.roles).toHaveProperty(role);
+    }
+  });
+});
+
+describe("ORDER_SOURCES", () => {
+  it("contains manual and marketplace sources", () => {
+    expect(ORDER_SOURCES).toContain("manual");
+    expect(ORDER_SOURCES).toContain("allegro");
+    expect(ORDER_SOURCES).toContain("amazon");
+  });
+});
+
+describe("PAYMENT_STATUSES", () => {
+  it("has expected keys", () => {
+    expect(PAYMENT_STATUSES).toHaveProperty("pending");
+    expect(PAYMENT_STATUSES).toHaveProperty("paid");
+    expect(PAYMENT_STATUSES).toHaveProperty("refunded");
+  });
+});
+
+describe("PAYMENT_METHODS", () => {
+  it("is a non-empty array", () => {
+    expect(PAYMENT_METHODS.length).toBeGreaterThan(0);
+  });
+});
+
+describe("Provider labels", () => {
+  it("ORDER_SOURCE_LABELS has labels for all ORDER_SOURCES", () => {
+    for (const source of ORDER_SOURCES) {
+      expect(ORDER_SOURCE_LABELS).toHaveProperty(source);
+      expect(typeof ORDER_SOURCE_LABELS[source]).toBe("string");
+    }
+  });
+
+  it("SHIPMENT_PROVIDER_LABELS has labels for all SHIPMENT_PROVIDERS", () => {
+    for (const provider of SHIPMENT_PROVIDERS) {
+      expect(SHIPMENT_PROVIDER_LABELS).toHaveProperty(provider);
+    }
+  });
+
+  it("INTEGRATION_PROVIDER_LABELS has labels for all INTEGRATION_PROVIDERS", () => {
+    for (const provider of INTEGRATION_PROVIDERS) {
+      expect(INTEGRATION_PROVIDER_LABELS).toHaveProperty(provider);
+    }
+  });
+});
+
+describe("INVOICE_STATUS_MAP", () => {
+  it("has expected keys", () => {
+    expect(INVOICE_STATUS_MAP).toHaveProperty("draft");
+    expect(INVOICE_STATUS_MAP).toHaveProperty("issued");
+    expect(INVOICE_STATUS_MAP).toHaveProperty("paid");
+    expect(INVOICE_STATUS_MAP).toHaveProperty("cancelled");
+  });
+});
+
+describe("INVOICE_TYPE_LABELS", () => {
+  it("has labels for invoice types", () => {
+    expect(INVOICE_TYPE_LABELS).toHaveProperty("vat");
+    expect(INVOICE_TYPE_LABELS).toHaveProperty("proforma");
+    expect(INVOICE_TYPE_LABELS).toHaveProperty("correction");
+    expect(INVOICE_TYPE_LABELS).toHaveProperty("receipt");
+  });
+});
+
+describe("Automation constants", () => {
+  it("AUTOMATION_TRIGGER_EVENTS is non-empty", () => {
+    expect(AUTOMATION_TRIGGER_EVENTS.length).toBeGreaterThan(0);
+  });
+
+  it("AUTOMATION_TRIGGER_LABELS has labels for all events", () => {
+    for (const event of AUTOMATION_TRIGGER_EVENTS) {
+      expect(AUTOMATION_TRIGGER_LABELS).toHaveProperty(event);
+    }
+  });
+
+  it("AUTOMATION_ACTION_TYPES is non-empty", () => {
+    expect(AUTOMATION_ACTION_TYPES.length).toBeGreaterThan(0);
+  });
+
+  it("AUTOMATION_ACTION_LABELS has labels for all action types", () => {
+    for (const action of AUTOMATION_ACTION_TYPES) {
+      expect(AUTOMATION_ACTION_LABELS).toHaveProperty(action);
+    }
+  });
+});
+
+// The pages migrated to StatusBadge (openoms-dev-7sl) no longer carry their own label
+// maps: the badge resolves `statuses.<prefix>.<status>` from the catalogs. A status key
+// present in constants but missing from a catalog would render the raw dotted key at
+// runtime, which neither `next build` nor eslint can catch — hence this parity guard.
+describe("status families migrated to StatusBadge", () => {
+  const families: Array<[string, string, Record<string, { label: string; color: string }>]> = [
+    ["DROPSHIP_STATUSES", "dropship", DROPSHIP_STATUSES],
+    ["LOYALTY_STATUSES", "loyalty", LOYALTY_STATUSES],
+    ["STOCKTAKE_STATUSES", "stocktake", STOCKTAKE_STATUSES],
+    ["RECURRING_ORDER_STATUSES", "recurringOrder", RECURRING_ORDER_STATUSES],
+    ["WAREHOUSE_DOCUMENT_STATUSES", "warehouseDocument", WAREHOUSE_DOCUMENT_STATUSES],
+    ["PICK_PACK_STATUSES", "pickPack", PICK_PACK_STATUSES],
+    ["REPRICING_RULE_STATUSES", "repricingRule", REPRICING_RULE_STATUSES],
+  ];
+
+  const catalog = (messages: typeof plStatusMessages, prefix: string) =>
+    (messages.statuses as unknown as Record<string, Record<string, string>>)[prefix];
+
+  it.each(families)("%s has a label and colour for every status", (_name, _prefix, family) => {
+    expect(Object.keys(family).length).toBeGreaterThan(0);
+    for (const [, value] of Object.entries(family)) {
+      expect(typeof value.label).toBe("string");
+      expect(value.color).toMatch(/^bg-/);
+    }
+  });
+
+  it.each(families)("%s is translated in pl and en", (_name, prefix, family) => {
+    const pl = catalog(plStatusMessages, prefix);
+    const en = catalog(enStatusMessages, prefix);
+    expect(pl).toBeDefined();
+    expect(en).toBeDefined();
+    for (const status of Object.keys(family)) {
+      expect(pl).toHaveProperty(status);
+      expect(en).toHaveProperty(status);
+    }
+  });
+});

@@ -1,0 +1,129 @@
+{
+  "returnRequest": {
+    "backToForm": "Back to form",
+    "checkReturnStatus": "Check return status",
+    "describeReturnReason": "Describe the return reason",
+    "detail": {
+      "reportReturn": "Report Return"
+    },
+    "enterOrderNumberAndEmail": "Enter the order number and email address that",
+    "error": "Error",
+    "fillFormToSubmitReturn": "Fill in the form to submit an order return",
+    "lastUpdate": "Last Update",
+    "loading": "Loading",
+    "orderNumberId": "Order number / ID",
+    "productsToReturn": "Products To Return",
+    "progress": "Postep",
+    "requestRegisteredWillReceiveInfo": "Your request has been registered. You will receive information",
+    "returnCancelled": "Return has been cancelled.",
+    "returnCancelledGeneric": "Return has been cancelled.",
+    "returnLabel": "Return Label",
+    "returnNotFound": "Return Not Found",
+    "returnReason": "Return reason",
+    "returnRequestAcceptedTrack": "Your return request has been accepted. You can track",
+    "returnRequestRejected": "Your return request has been rejected.",
+    "returnRequestRejectedGeneric": "Your return request has been rejected.",
+    "returnStatus": "Return Status",
+    "returnStatusLoadError": "An error occurred while loading return status.",
+    "returnStatusLoadErrorGeneric": "An error occurred while loading return status.",
+    "returnSubmitError": "An error occurred while submitting the return",
+    "returnSubmitted": "Return has been submitted",
+    "sending": "Sending",
+    "serverConnectionError": "Failed to connect to server.",
+    "serverConnectionErrorGeneric": "Failed to connect to server.",
+    "serverConnectionErrorRetry": "Failed to connect to server. Please try again.",
+    "statusAtLinkBelow": "its status using the link below",
+    "submitAnotherReturn": "Submit another return",
+    "submittedAt": "Submitted At",
+    "usedWhenPlacingOrder": "was used when placing the order"
+  },
+  "returns": {
+    "additionalInfoOptional": "Additional Info Optional",
+    "cancel": "Cancel",
+    "changeStatus": "Change status",
+    "columns": {
+      "date": "Date",
+      "order": "Order",
+      "reason": "Reason",
+      "refundAmount": "Refund amount",
+      "status": "Status"
+    },
+    "createReturn": "Create return",
+    "createReturn2": "Utworz Zwrot",
+    "created": "Created",
+    "createdOn": "Created {date}",
+    "creating": "Creating",
+    "customerEmail": "Customer email (from form)",
+    "customerNotes": "Customer notes",
+    "delete": "Delete",
+    "deleteReturn": "Delete return",
+    "deleteReturnConfirm": "Are you sure you want to delete this return? This action is irreversible.",
+    "detail": {
+      "backToList": "Back to returns"
+    },
+    "edit": "Edit",
+    "editReturn": "Edit return",
+    "empty": {
+      "description": "No returns found to display.",
+      "title": "No returns"
+    },
+    "enterReturnReason": "Enter return reason",
+    "enterReturnReason2": "Podaj Powod Zwrotu",
+    "fillFormForNewReturn": "Fill in the form to report a new return",
+    "fillFormForNewReturn2": "Wypełnij Formularz Aby Zgłosic Nowy Zwrot",
+    "inOrder": "In order",
+    "inOrderLabel": "W Zamowieniu",
+    "loadError": "Load Error",
+    "loadingOrderItems": "Loading order items",
+    "loadingOrderItems2": "Wczytywanie Pozycji Zamowienia",
+    "newReturn": "New return",
+    "noItemsInOrder": "No items in order",
+    "noItemsInOrder2": "Brak Pozycji W Zamowieniu",
+    "notFound": "Return not found",
+    "notes": "Notes",
+    "order": {
+      "refunded": "Refunded"
+    },
+    "product": "Product",
+    "productsToReturn": "Products To Return",
+    "refundAmount": "Refund amount",
+    "refundAmountPln": "Refund Amount Pln",
+    "retry": "Retry",
+    "return": {
+      "requested": "Requested"
+    },
+    "returnCreated": "Return has been created",
+    "returnData": "Return details",
+    "returnDeleted": "Return has been deleted",
+    "returnTitle": "Return #{id}",
+    "returnUpdated": "Return has been updated",
+    "returnWasCreated": "Zwrotzostałutworzony",
+    "saveChanges": "Save changes",
+    "saving": "Saving...",
+    "statusChanged": "Return status has been changed",
+    "statuses": {
+      "all": "All",
+      "approved": "Approved",
+      "cancelled": "Cancelled",
+      "received": "Received",
+      "rejected": "Rejected"
+    },
+    "subtitle": "Manage returns and claims",
+    "title": "Returns",
+    "toReturn": "To Return",
+    "trackingLinkForCustomer": "Tracking link (for customer)",
+    "transitions": {
+      "approved": "Approve",
+      "cancelled": "Cancel",
+      "received": "Mark as received",
+      "refunded": "Refund",
+      "rejected": "Reject"
+    },
+    "updated": "Updated",
+    "validation": {
+      "amountPositive": "Amount must be positive",
+      "orderIdRequired": "Order Id Required",
+      "reasonRequired": "Reason is required"
+    }
+  }
+}

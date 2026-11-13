@@ -1,0 +1,112 @@
+"use client";
+
+import Link from "next/link";
+import { DataTable, type ColumnDef } from "@/components/shared/data-table";
+import { StatusBadge } from "@/components/shared/status-badge";
+import { INVOICE_STATUS_MAP, INVOICE_TYPE_LABELS, INVOICING_PROVIDER_LABELS, KSEF_STATUS_MAP } from "@/lib/constants";
+import { formatDate, formatCurrency, shortId } from "@/lib/utils";
+import type { Invoice } from "@/types/api";
+import { EmptyState } from "@/components/shared/empty-state";
+import { FileText } from "lucide-react";
+import { useTranslations } from "next-intl";
+
+interface InvoiceTableProps {
+  data: Invoice[];
+  isLoading: boolean;
+  onRowClick?: (row: Invoice) => void;
+}
+
+function useInvoiceColumns(): ColumnDef<Invoice>[] {
+  const t = useTranslations("invoices");
+  return [
+    {
+      header: t("columns.number"),
+      accessorKey: "external_number",
+      cell: (row) => (
+        <span className="font-mono text-sm">
+          {row.external_number || shortId(row.id)}
+        </span>
+      ),
+    },
+    {
+      header: t("columns.order"),
+      accessorKey: "order_id",
+      cell: (row) => (
+        <Link
+          href={`/orders/${row.order_id}`}
+          className="font-mono text-xs text-primary hover:underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {shortId(row.order_id)}
+        </Link>
+      ),
+    },
+    {
+      header: "Status",
+      accessorKey: "status",
+      cell: (row) => <StatusBadge status={row.status} statusMap={INVOICE_STATUS_MAP} translationPrefix="invoice" />,
+    },
+    {
+      header: t("columns.type"),
+      accessorKey: "invoice_type",
+      cell: (row) => (
+        <span className="text-sm">
+          {INVOICE_TYPE_LABELS[row.invoice_type] || row.invoice_type}
+        </span>
+      ),
+    },
+    {
+      header: t("columns.grossAmount"),
+      accessorKey: "total_gross",
+      cell: (row) => formatCurrency(row.total_gross, row.currency),
+    },
+    {
+      header: t("columns.issueDate"),
+      accessorKey: "issue_date",
+      cell: (row) => (row.issue_date ? formatDate(row.issue_date) : "-"),
+    },
+    {
+      header: "KSeF",
+      accessorKey: "ksef_status",
+      cell: (row) => (
+        <div className="flex flex-col gap-1">
+          <StatusBadge status={row.ksef_status} statusMap={KSEF_STATUS_MAP} translationPrefix="ksef" />
+          {row.ksef_number && (
+            <span className="font-mono text-xs text-muted-foreground">
+              {row.ksef_number}
+            </span>
+          )}
+        </div>
+      ),
+    },
+    {
+      header: t("columns.provider"),
+      accessorKey: "provider",
+      cell: (row) => (
+        <span className="text-sm">
+          {INVOICING_PROVIDER_LABELS[row.provider] || row.provider}
+        </span>
+      ),
+    },
+  ];
+}
+
+export function InvoiceTable({ data, isLoading, onRowClick }: InvoiceTableProps) {
+  const t = useTranslations("invoices");
+  const invoiceColumns = useInvoiceColumns();
+  return (
+    <DataTable<Invoice>
+      columns={invoiceColumns}
+      data={data}
+      isLoading={isLoading}
+      emptyState={
+        <EmptyState
+          icon={FileText}
+          title={t("noInvoices")}
+          description={t("nieZnalezionoFakturDoWyswietlenia")}
+        />
+      }
+      onRowClick={onRowClick}
+    />
+  );
+}

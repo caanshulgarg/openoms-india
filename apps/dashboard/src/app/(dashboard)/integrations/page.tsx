@@ -1,0 +1,202 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { Info, KeyRound, Plug, Trash2 } from "lucide-react";
+import { toast } from "sonner";
+import { AdminGuard } from "@/components/shared/admin-guard";
+import { useIntegrations, useDeleteIntegration } from "@/hooks/use-integrations";
+import { PageHeader } from "@/components/shared/page-header";
+import { EmptyState } from "@/components/shared/empty-state";
+import { LoadingSkeleton } from "@/components/shared/loading-skeleton";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ProviderLogo } from "@/components/shared/provider-logo";
+import { StatusBadge } from "@/components/shared/status-badge";
+import { INTEGRATION_STATUSES } from "@/lib/constants";
+import { formatDate } from "@/lib/utils";
+import { getErrorMessage } from "@/lib/api-client";
+import { Badge } from "@/components/ui/badge";
+import { DevelopmentBadge } from "@/components/shared/development-banner";
+import { isInDevelopment } from "@/lib/integration-status";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { useTranslations } from "next-intl";
+
+export default function IntegrationsPage() {
+  const t = useTranslations("integrations");
+  const tc = useTranslations("common");
+  const router = useRouter();
+  const { data: integrations, isLoading, isError, refetch } = useIntegrations();
+  const deleteIntegration = useDeleteIntegration();
+
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  if (isLoading) {
+    return <LoadingSkeleton />;
+  }
+
+  const handleDelete = () => {
+    if (!deleteId) return;
+    deleteIntegration.mutate(deleteId, {
+      onSuccess: () => {
+        toast.success(t("integrationWasDeleted"));
+        setDeleteId(null);
+      },
+      onError: (error) => {
+        toast.error(getErrorMessage(error));
+      },
+    });
+  };
+
+  return (
+    <AdminGuard>
+      <PageHeader
+        title={t("integrations")}
+        description={t("manageExternalConnections")}
+        action={{ label: t("newIntegration"), href: "/integrations/new" }}
+      />
+
+      <Card className="border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-950">
+        <CardContent className="flex items-center gap-3 py-3">
+          <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 shrink-0" />
+          <p className="text-sm text-blue-800 dark:text-blue-200">
+            {t("lookingForIntegrations")}{" "}
+            <Link href="/carriers" className="font-medium underline">{t("carriers")}</Link>,{" "}
+            <Link href="/marketplaces" className="font-medium underline">Marketplace</Link>{" "}
+            {t("and")}{" "}
+            <Link href="/invoicing" className="font-medium underline">{t("invoicing")}</Link>{" "}
+            {t("haveOwnMenuSections")}
+          </p>
+        </CardContent>
+      </Card>
+
+      {isError && (
+        <div className="rounded-md border border-destructive bg-destructive/10 p-4">
+          <p className="text-sm text-destructive">
+            {t("loadError")}
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-2"
+            onClick={() => refetch()}
+          >
+            {t("retry")}
+          </Button>
+        </div>
+      )}
+
+      {!integrations || integrations.length === 0 ? (
+        <EmptyState
+          icon={Plug}
+          title={t("noIntegrations")}
+          description={t("addFirstIntegrationToConnect")}
+          action={{ label: t("newIntegration"), href: "/integrations/new" }}
+        />
+      ) : (
+        <div className="rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t("provider")}</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>{t("authCredentials")}</TableHead>
+                <TableHead>{t("lastSync")}</TableHead>
+                <TableHead>{t("createdAt")}</TableHead>
+                <TableHead className="w-[60px]" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {integrations.map((integration) => {
+                // Providers with dedicated pages get routed there
+                const dedicatedPages: Record<string, string> = {
+                  allegro: "/marketplaces/allegro",
+                  amazon: "/marketplaces/amazon",
+                  shoper: "/marketplaces/shoper",
+                  prestashop: "/marketplaces/prestashop",
+                  shopify: "/marketplaces/shopify",
+                };
+                const href = dedicatedPages[integration.provider] ?? `/integrations/${integration.id}`;
+                return (
+                <TableRow
+                  key={integration.id}
+                  className="cursor-pointer hover:bg-muted/50 transition-colors"
+                  onClick={() => router.push(href)}
+                >
+                  <TableCell className="font-medium">
+                    <span className="inline-flex items-center gap-2">
+                      <ProviderLogo
+                        providerKey={integration.provider}
+                        showName
+                        size="sm"
+                      />
+                      {isInDevelopment(integration.provider) && <DevelopmentBadge />}
+                    </span>
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge
+                      status={integration.status}
+                      statusMap={INTEGRATION_STATUSES}
+                      translationPrefix="integration"
+                    />
+                  </TableCell>
+                  <TableCell>
+                    {integration.has_credentials ? (
+                      <Badge variant="success" className="gap-1">
+                        <KeyRound className="h-3 w-3" />
+                        {t("configured")}
+                      </Badge>
+                    ) : (
+                      <Badge variant="secondary" className="text-muted-foreground">
+                        {t("notConfigured")}
+                      </Badge>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {integration.last_sync_at
+                      ? formatDate(integration.last_sync_at)
+                      : "---"}
+                  </TableCell>
+                  <TableCell>{formatDate(integration.created_at)}</TableCell>
+                  <TableCell>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeleteId(integration.id);
+                      }}
+                    >
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={!!deleteId}
+        onOpenChange={(open) => !open && setDeleteId(null)}
+        title={t("deleteIntegration")}
+        description={t("deleteIntegrationConfirm")}
+        confirmLabel={tc("delete")}
+        variant="destructive"
+        onConfirm={handleDelete}
+        isPending={deleteIntegration.isPending}
+      />
+    </AdminGuard>
+  );
+}

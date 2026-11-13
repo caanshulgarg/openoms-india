@@ -1,0 +1,541 @@
+package repository
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/openoms-org/openoms/apps/api-server/internal/model"
+)
+
+// AutomationRuleRepo defines the interface for automation rule persistence.
+type AutomationRuleRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.AutomationRuleListFilter) ([]model.AutomationRule, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.AutomationRule, error)
+	FindByTenantAndEvent(ctx context.Context, tx pgx.Tx, event string) ([]model.AutomationRule, error)
+	Create(ctx context.Context, tx pgx.Tx, rule *model.AutomationRule) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateAutomationRuleRequest) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	IncrementFireCount(ctx context.Context, tx pgx.Tx, id uuid.UUID, firedAt time.Time) error
+}
+
+// AutomationRuleLogRepo defines the interface for automation rule log persistence.
+type AutomationRuleLogRepo interface {
+	Create(ctx context.Context, tx pgx.Tx, log *model.AutomationRuleLog) error
+	ListByRuleID(ctx context.Context, tx pgx.Tx, ruleID uuid.UUID, limit, offset int) ([]model.AutomationRuleLog, int, error)
+}
+
+// DelayedActionRepo defines the interface for delayed automation action persistence.
+type DelayedActionRepo interface {
+	Create(ctx context.Context, tx pgx.Tx, da *model.DelayedAction) error
+	ListPending(ctx context.Context, tx pgx.Tx, limit int) ([]model.DelayedAction, error)
+	MarkExecuted(ctx context.Context, tx pgx.Tx, id uuid.UUID, errMsg *string) error
+	RequeueForRetry(ctx context.Context, tx pgx.Tx, id uuid.UUID, nextExecuteAt time.Time, errMsg string) error
+	ListPendingByTenant(ctx context.Context, tx pgx.Tx) ([]model.DelayedAction, error)
+}
+
+// OrderRepo defines the interface for order persistence operations.
+type OrderRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.OrderListFilter) ([]model.Order, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.Order, error)
+	FindByIDs(ctx context.Context, tx pgx.Tx, ids []uuid.UUID) (map[uuid.UUID]*model.Order, error)
+	Create(ctx context.Context, tx pgx.Tx, order *model.Order) error
+	CreateIfExternalIDNotExists(ctx context.Context, tx pgx.Tx, order *model.Order) (bool, error)
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateOrderRequest) error
+	UpdateStatus(ctx context.Context, tx pgx.Tx, id uuid.UUID, status string, shippedAt, deliveredAt *time.Time) error
+	FindByExternalID(ctx context.Context, tx pgx.Tx, source, externalID string) (*model.Order, error)
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	CountThisMonth(ctx context.Context, tx pgx.Tx) (int, error)
+}
+
+// UserRepo defines the interface for user persistence operations.
+type UserRepo interface {
+	FindForAuth(ctx context.Context, email string, tenantID uuid.UUID) (*UserWithPassword, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.User, error)
+	List(ctx context.Context, tx pgx.Tx) ([]model.User, error)
+	Count(ctx context.Context, tx pgx.Tx) (int, error)
+	Create(ctx context.Context, tx pgx.Tx, user *model.User, passwordHash string) error
+	FindPasswordHashByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*string, error)
+	UpdatePassword(ctx context.Context, tx pgx.Tx, id uuid.UUID, passwordHash string) error
+	UpdateRole(ctx context.Context, tx pgx.Tx, id uuid.UUID, role string) error
+	UpdateRoleID(ctx context.Context, tx pgx.Tx, id uuid.UUID, roleID *uuid.UUID) error
+	UpdateName(ctx context.Context, tx pgx.Tx, id uuid.UUID, name string) error
+	UpdateLanguage(ctx context.Context, tx pgx.Tx, id uuid.UUID, language *string) error
+	UpdateLastLogin(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	UpdateLastLogout(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	CountByRole(ctx context.Context, tx pgx.Tx, role string) (int, error)
+	SetTOTPSecret(ctx context.Context, tx pgx.Tx, id uuid.UUID, encryptedSecret string) error
+	EnableTOTP(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	DisableTOTP(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	GetTOTPStatus(ctx context.Context, tx pgx.Tx, id uuid.UUID) (bool, *string, error)
+	GetTOTPSecret(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*string, error)
+	GetTOTPLastUsedStep(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*int64, error)
+	SetTOTPLastUsedStep(ctx context.Context, tx pgx.Tx, id uuid.UUID, step int64) (bool, error)
+}
+
+// TenantRepo defines the interface for tenant persistence operations.
+type TenantRepo interface {
+	FindBySlug(ctx context.Context, slug string) (*model.Tenant, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.Tenant, error)
+	SlugExists(ctx context.Context, slug string) (bool, error)
+	Create(ctx context.Context, tx pgx.Tx, tenant *model.Tenant) error
+	GetSettings(ctx context.Context, tx pgx.Tx, id uuid.UUID) (json.RawMessage, error)
+	GetSettingsForUpdate(ctx context.Context, tx pgx.Tx, id uuid.UUID) (json.RawMessage, error)
+	ListAllTenantIDs(ctx context.Context, pool *pgxpool.Pool) ([]uuid.UUID, error)
+	UpdateSettings(ctx context.Context, tx pgx.Tx, id uuid.UUID, settings json.RawMessage) error
+}
+
+// AuditRepo defines the interface for audit log persistence operations.
+type AuditRepo interface {
+	Log(ctx context.Context, tx pgx.Tx, entry model.AuditEntry) error
+	ListByEntity(ctx context.Context, tx pgx.Tx, entityType string, entityID uuid.UUID) ([]model.AuditLogEntry, error)
+	List(ctx context.Context, tx pgx.Tx, filter model.AuditListFilter) ([]model.AuditLogEntry, int, error)
+}
+
+// ShipmentRepo defines the interface for shipment persistence operations.
+type ShipmentRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.ShipmentListFilter) ([]model.Shipment, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.Shipment, error)
+	FindByExternalID(ctx context.Context, tx pgx.Tx, externalID string) (*model.Shipment, error)
+	CountByOrder(ctx context.Context, tx pgx.Tx, orderID uuid.UUID) (int, error)
+	Create(ctx context.Context, tx pgx.Tx, shipment *model.Shipment) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateShipmentRequest) error
+	UpdateStatus(ctx context.Context, tx pgx.Tx, id uuid.UUID, status string) error
+	UpdateStatusIfCurrent(ctx context.Context, tx pgx.Tx, id uuid.UUID, expected, newStatus string) (bool, error)
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+}
+
+// ProductRepo defines the interface for product persistence operations.
+type ProductRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.ProductListFilter) ([]model.Product, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.Product, error)
+	FindByIDs(ctx context.Context, tx pgx.Tx, ids []uuid.UUID) ([]model.Product, error)
+	FindBySKU(ctx context.Context, tx pgx.Tx, sku string) (*model.Product, error)
+	FindByEAN(ctx context.Context, tx pgx.Tx, ean string) (*model.Product, error)
+	FindIDsByEANs(ctx context.Context, tx pgx.Tx, eans []string) (map[string]uuid.UUID, error)
+	Create(ctx context.Context, tx pgx.Tx, product *model.Product) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateProductRequest) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	AvailableStockBatch(ctx context.Context, tx pgx.Tx, productIDs []uuid.UUID) (map[uuid.UUID]int, error)
+}
+
+// IntegrationRepo defines the interface for integration persistence operations.
+type IntegrationRepo interface {
+	List(ctx context.Context, tx pgx.Tx) ([]model.IntegrationWithCreds, error)
+	Count(ctx context.Context, tx pgx.Tx) (int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.IntegrationWithCreds, error)
+	FindByProvider(ctx context.Context, tx pgx.Tx, provider string) (*model.IntegrationWithCreds, error)
+	Create(ctx context.Context, tx pgx.Tx, integration *model.Integration, encryptedCreds string) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateIntegrationRequest, encryptedCreds *string) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+}
+
+// ReturnRepo defines the interface for return/RMA persistence operations.
+type ReturnRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.ReturnListFilter) ([]model.Return, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.Return, error)
+	FindByToken(ctx context.Context, tx pgx.Tx, token string) (*model.Return, error)
+	Create(ctx context.Context, tx pgx.Tx, ret *model.Return) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateReturnRequest) error
+	UpdateStatus(ctx context.Context, tx pgx.Tx, id uuid.UUID, status string) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+}
+
+// ExchangeRateRepo defines the interface for exchange rate persistence operations.
+type ExchangeRateRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.ExchangeRateListFilter) ([]model.ExchangeRate, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.ExchangeRate, error)
+	GetRate(ctx context.Context, tx pgx.Tx, baseCurrency, targetCurrency string) (*model.ExchangeRate, error)
+	Create(ctx context.Context, tx pgx.Tx, rate *model.ExchangeRate) error
+	Upsert(ctx context.Context, tx pgx.Tx, rate *model.ExchangeRate) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateExchangeRateRequest) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+}
+
+// WebhookRepo defines the interface for webhook event persistence operations.
+type WebhookRepo interface {
+	Create(ctx context.Context, tx pgx.Tx, event *model.WebhookEvent) error
+}
+
+// WebhookDeliveryRepo defines the interface for webhook delivery persistence operations.
+type WebhookDeliveryRepo interface {
+	Create(ctx context.Context, tx pgx.Tx, delivery *model.WebhookDelivery) error
+	List(ctx context.Context, tx pgx.Tx, filter model.WebhookDeliveryFilter) ([]model.WebhookDelivery, int, error)
+}
+
+// StatsRepo defines the interface for statistics/analytics persistence operations.
+type StatsRepo interface {
+	GetOrderCountByStatus(ctx context.Context, tx pgx.Tx) (map[string]int, error)
+	GetOrderCountBySource(ctx context.Context, tx pgx.Tx) (map[string]int, error)
+	GetTotalRevenue(ctx context.Context, tx pgx.Tx) (float64, error)
+	GetDailyRevenue(ctx context.Context, tx pgx.Tx, days int) ([]model.DailyRevenue, error)
+	GetRecentOrders(ctx context.Context, tx pgx.Tx, limit int) ([]model.OrderSummary, error)
+	GetMostCommonCurrency(ctx context.Context, tx pgx.Tx) (string, error)
+	GetTopProducts(ctx context.Context, tx pgx.Tx, days, limit int) ([]model.TopProduct, error)
+	GetRevenueBySource(ctx context.Context, tx pgx.Tx, days int) ([]model.SourceRevenue, error)
+	GetOrderTrends(ctx context.Context, tx pgx.Tx, days int) ([]model.DailyOrderTrend, error)
+	GetPaymentMethodStats(ctx context.Context, tx pgx.Tx) (map[string]int, error)
+}
+
+// ProductListingRepo defines the interface for product listing persistence operations.
+type ProductListingRepo interface {
+	Create(ctx context.Context, tx pgx.Tx, listing *model.ProductListing) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req *model.UpdateProductListingRequest) error
+	GetByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.ProductListing, error)
+	FindByProductAndIntegration(ctx context.Context, tx pgx.Tx, productID, integrationID uuid.UUID) (*model.ProductListing, error)
+	ListByProduct(ctx context.Context, tx pgx.Tx, productID uuid.UUID) ([]*model.ProductListing, error)
+	ListByIntegration(ctx context.Context, tx pgx.Tx, integrationID uuid.UUID) ([]*model.ProductListing, error)
+	ListAutoSyncByProduct(ctx context.Context, tx pgx.Tx, productID uuid.UUID) ([]*model.ProductListing, error)
+	FindByExternalIDAndIntegration(ctx context.Context, tx pgx.Tx, externalID string, integrationID uuid.UUID) (*model.ProductListing, error)
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+}
+
+// SyncJobRepo defines the interface for sync job persistence operations.
+type SyncJobRepo interface {
+	Create(ctx context.Context, tx pgx.Tx, job *model.SyncJob) error
+	UpdateStatus(ctx context.Context, tx pgx.Tx, id uuid.UUID, status string, itemsProcessed, itemsFailed int, errorMsg *string) error
+	GetByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.SyncJob, error)
+	ListByIntegration(ctx context.Context, tx pgx.Tx, integrationID uuid.UUID, limit int) ([]*model.SyncJob, error)
+	List(ctx context.Context, tx pgx.Tx, filter model.SyncJobListFilter) ([]*model.SyncJob, int, error)
+}
+
+// SupplierRepo defines the interface for supplier persistence operations.
+type SupplierRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.SupplierListFilter) ([]model.Supplier, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.Supplier, error)
+	Create(ctx context.Context, tx pgx.Tx, supplier *model.Supplier) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateSupplierRequest) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	UpdateSyncStatus(ctx context.Context, tx pgx.Tx, id uuid.UUID, lastSyncAt time.Time, errorMessage *string) error
+	UpdateLastFullSync(ctx context.Context, tx pgx.Tx, id uuid.UUID, t time.Time) error
+	UpdateSettingsKeys(ctx context.Context, tx pgx.Tx, id uuid.UUID, keys map[string]any) error
+}
+
+// SupplierCategoryMappingRepo defines the interface for supplier category mapping persistence.
+type SupplierCategoryMappingRepo interface {
+	ListBySupplier(ctx context.Context, tx pgx.Tx, supplierID uuid.UUID) ([]model.SupplierCategoryMapping, error)
+	FindBySourceCategory(ctx context.Context, tx pgx.Tx, supplierID uuid.UUID, sourceCategory string) (*model.SupplierCategoryMapping, error)
+	Upsert(ctx context.Context, tx pgx.Tx, m *model.SupplierCategoryMapping) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+}
+
+// ProductCategoryRepo defines the interface for product category persistence operations.
+type ProductCategoryRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.CategoryListFilter) ([]model.ProductCategory, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.ProductCategory, error)
+	FindBySlug(ctx context.Context, tx pgx.Tx, slug string) (*model.ProductCategory, error)
+	Create(ctx context.Context, tx pgx.Tx, c *model.ProductCategory) error
+	Update(ctx context.Context, tx pgx.Tx, c *model.ProductCategory) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	GetDescendantIDs(ctx context.Context, tx pgx.Tx, id uuid.UUID) ([]uuid.UUID, error)
+	FuzzyMatch(ctx context.Context, tx pgx.Tx, name string) ([]model.ProductCategory, error)
+	CountBySlug(ctx context.Context, tx pgx.Tx, slug string) (int, error)
+}
+
+// MarketplaceCategoryMappingRepo defines the interface for marketplace category mapping persistence.
+type MarketplaceCategoryMappingRepo interface {
+	ListByIntegration(ctx context.Context, tx pgx.Tx, integrationID uuid.UUID) ([]model.MarketplaceCategoryMapping, error)
+	FindByExternalID(ctx context.Context, tx pgx.Tx, integrationID uuid.UUID, externalCategoryID string) (*model.MarketplaceCategoryMapping, error)
+	Upsert(ctx context.Context, tx pgx.Tx, m *model.MarketplaceCategoryMapping) error
+	Delete(ctx context.Context, tx pgx.Tx, integrationID, id uuid.UUID) error
+}
+
+// InvoiceRepo defines the interface for invoice persistence operations.
+type InvoiceRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.InvoiceListFilter) ([]model.Invoice, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.Invoice, error)
+	FindByOrderID(ctx context.Context, tx pgx.Tx, orderID uuid.UUID) ([]model.Invoice, error)
+	Create(ctx context.Context, tx pgx.Tx, inv *model.Invoice) error
+	Update(ctx context.Context, tx pgx.Tx, inv *model.Invoice) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	FindPendingKSeF(ctx context.Context, tx pgx.Tx) ([]model.Invoice, error)
+	FindErrorKSeF(ctx context.Context, tx pgx.Tx) ([]model.Invoice, error)
+	FindRetryableKSeF(ctx context.Context, tx pgx.Tx) ([]model.Invoice, error)
+	UpdateKSeFStatus(ctx context.Context, tx pgx.Tx, id uuid.UUID, ksefNumber *string, ksefStatus string, ksefResponse []byte) error
+}
+
+// SupplierProductRepo defines the interface for supplier product persistence operations.
+type SupplierProductRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.SupplierProductListFilter) ([]model.SupplierProduct, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.SupplierProduct, error)
+	Create(ctx context.Context, tx pgx.Tx, sp *model.SupplierProduct) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, name string, ean, sku *string, price *float64, stock int, metadata []byte, syncedAt *time.Time) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	FindByEAN(ctx context.Context, tx pgx.Tx, ean string) (*model.SupplierProduct, error)
+	FindBySupplierAndExternalID(ctx context.Context, tx pgx.Tx, supplierID uuid.UUID, externalID string) (*model.SupplierProduct, error)
+	FindBySupplierAndProductID(ctx context.Context, tx pgx.Tx, supplierID, productID uuid.UUID) (*model.SupplierProduct, error)
+	UpsertByExternalID(ctx context.Context, tx pgx.Tx, sp *model.SupplierProduct) error
+	UpsertBatchByExternalID(ctx context.Context, tx pgx.Tx, sps []*model.SupplierProduct) error
+	FindByIDs(ctx context.Context, tx pgx.Tx, ids []uuid.UUID) ([]model.SupplierProduct, error)
+	LinkToProduct(ctx context.Context, tx pgx.Tx, id uuid.UUID, productID uuid.UUID) error
+	UnlinkProduct(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	BulkDelete(ctx context.Context, tx pgx.Tx, ids []uuid.UUID) (int, error)
+	ListSourceCategories(ctx context.Context, tx pgx.Tx, supplierID uuid.UUID) ([]string, error)
+	ListAttributes(ctx context.Context, tx pgx.Tx, supplierID uuid.UUID) ([]string, error)
+	FindSupplierIDByProductID(ctx context.Context, tx pgx.Tx, productID uuid.UUID) (*uuid.UUID, error)
+	ListExternalIDsBySupplier(ctx context.Context, tx pgx.Tx, supplierID uuid.UUID) ([]string, error)
+	DeleteStaleByExternalIDs(ctx context.Context, tx pgx.Tx, supplierID uuid.UUID, keepExternalIDs []string) ([]uuid.UUID, error)
+	ListAll(ctx context.Context, tx pgx.Tx, params model.SupplierProductListAllParams) ([]model.SupplierProductWithSupplier, int, error)
+}
+
+// AllegroParameterMappingRepo defines the interface for Allegro parameter mapping persistence.
+type AllegroParameterMappingRepo interface {
+	ListBySupplierAndCategory(ctx context.Context, tx pgx.Tx, supplierID uuid.UUID, allegroCategoryID string) ([]model.AllegroParameterMapping, error)
+	BulkUpsert(ctx context.Context, tx pgx.Tx, mappings []*model.AllegroParameterMapping) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	ListCategoriesForSupplier(ctx context.Context, tx pgx.Tx, supplierID uuid.UUID) ([]string, error)
+}
+
+// WarehouseRepo defines the interface for warehouse persistence operations.
+type WarehouseRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.WarehouseListFilter) ([]model.Warehouse, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.Warehouse, error)
+	FindDefault(ctx context.Context, tx pgx.Tx) (*model.Warehouse, error)
+	Create(ctx context.Context, tx pgx.Tx, warehouse *model.Warehouse) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateWarehouseRequest) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+}
+
+// WarehouseStockRepo defines the interface for warehouse stock persistence operations.
+type WarehouseStockRepo interface {
+	ListByWarehouse(ctx context.Context, tx pgx.Tx, warehouseID uuid.UUID, filter model.WarehouseStockListFilter) ([]model.WarehouseStock, int, error)
+	ListByProduct(ctx context.Context, tx pgx.Tx, productID uuid.UUID) ([]model.WarehouseStock, error)
+	Upsert(ctx context.Context, tx pgx.Tx, stock *model.WarehouseStock) error
+	AdjustQuantity(ctx context.Context, tx pgx.Tx, warehouseID, productID uuid.UUID, variantID *uuid.UUID, delta int) error
+}
+
+// CustomerRepo defines the interface for customer persistence operations.
+type CustomerRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.CustomerListFilter) ([]model.Customer, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.Customer, error)
+	FindByEmail(ctx context.Context, tx pgx.Tx, email string) (*model.Customer, error)
+	Create(ctx context.Context, tx pgx.Tx, customer *model.Customer) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateCustomerRequest) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	IncrementOrderStats(ctx context.Context, tx pgx.Tx, id uuid.UUID, amount float64) error
+	ListOrdersByCustomerID(ctx context.Context, tx pgx.Tx, customerID uuid.UUID, filter model.OrderListFilter) ([]model.Order, int, error)
+}
+
+// VariantRepo defines the interface for product variant persistence operations.
+type VariantRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.VariantListFilter) ([]model.ProductVariant, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.ProductVariant, error)
+	FindBySKU(ctx context.Context, tx pgx.Tx, sku string) ([]model.ProductVariant, error)
+	FindByEAN(ctx context.Context, tx pgx.Tx, ean string) ([]model.ProductVariant, error)
+	Create(ctx context.Context, tx pgx.Tx, variant *model.ProductVariant) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateVariantRequest) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	CountByProductID(ctx context.Context, tx pgx.Tx, productID uuid.UUID) (int, error)
+}
+
+// WarehouseDocumentRepo defines the interface for warehouse document persistence operations.
+type WarehouseDocumentRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.WarehouseDocumentListFilter) ([]model.WarehouseDocument, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.WarehouseDocument, error)
+	Create(ctx context.Context, tx pgx.Tx, doc *model.WarehouseDocument) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateWarehouseDocumentRequest) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	Confirm(ctx context.Context, tx pgx.Tx, id uuid.UUID, confirmedBy uuid.UUID) error
+	Cancel(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	NextDocumentNumber(ctx context.Context, tx pgx.Tx, docType string, year int) (int, error)
+}
+
+// WarehouseDocItemRepo defines the interface for warehouse document item persistence operations.
+type WarehouseDocItemRepo interface {
+	ListByDocumentID(ctx context.Context, tx pgx.Tx, documentID uuid.UUID) ([]model.WarehouseDocItem, error)
+	Create(ctx context.Context, tx pgx.Tx, item *model.WarehouseDocItem) error
+}
+
+// RoleRepo defines the interface for role persistence operations.
+type RoleRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.RoleListFilter) ([]model.Role, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.Role, error)
+	FindByName(ctx context.Context, tx pgx.Tx, name string) (*model.Role, error)
+	Create(ctx context.Context, tx pgx.Tx, role *model.Role) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateRoleRequest) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+}
+
+// StocktakeRepo defines the interface for stocktake persistence operations.
+type StocktakeRepo interface {
+	Create(ctx context.Context, tx pgx.Tx, stocktake *model.Stocktake) error
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.Stocktake, error)
+	List(ctx context.Context, tx pgx.Tx, filter model.StocktakeListFilter) ([]model.Stocktake, int, error)
+	UpdateStatus(ctx context.Context, tx pgx.Tx, id uuid.UUID, status string) error
+	SetStartedAt(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	SetCompletedAt(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+}
+
+// StocktakeItemRepo defines the interface for stocktake item persistence operations.
+type StocktakeItemRepo interface {
+	CreateBulk(ctx context.Context, tx pgx.Tx, items []model.StocktakeItem) error
+	List(ctx context.Context, tx pgx.Tx, stocktakeID uuid.UUID, filter model.StocktakeItemListFilter) ([]model.StocktakeItem, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.StocktakeItem, error)
+	UpdateCount(ctx context.Context, tx pgx.Tx, itemID uuid.UUID, countedQty int, notes *string, countedBy uuid.UUID) error
+	GetStats(ctx context.Context, tx pgx.Tx, stocktakeID uuid.UUID) (*model.StocktakeStats, error)
+	ListDiscrepancies(ctx context.Context, tx pgx.Tx, stocktakeID uuid.UUID) ([]model.StocktakeItem, error)
+}
+
+// PurchaseOrderRepo defines the interface for purchase order persistence operations.
+type PurchaseOrderRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.PurchaseOrderListFilter) ([]model.PurchaseOrder, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.PurchaseOrder, error)
+	Create(ctx context.Context, tx pgx.Tx, po *model.PurchaseOrder) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdatePurchaseOrderRequest) error
+	UpdateStatus(ctx context.Context, tx pgx.Tx, id uuid.UUID, status string) error
+	UpdateTotalAmount(ctx context.Context, tx pgx.Tx, id uuid.UUID, amount float64) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	GeneratePONumber(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) (string, error)
+}
+
+// PurchaseOrderItemRepo defines the interface for purchase order item persistence operations.
+type PurchaseOrderItemRepo interface {
+	CreateItem(ctx context.Context, tx pgx.Tx, item *model.PurchaseOrderItem) error
+	ListByPOID(ctx context.Context, tx pgx.Tx, poID uuid.UUID) ([]model.PurchaseOrderItem, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.PurchaseOrderItem, error)
+	UpdateReceived(ctx context.Context, tx pgx.Tx, id uuid.UUID, quantityReceived int) error
+	DeleteByPOID(ctx context.Context, tx pgx.Tx, poID uuid.UUID) error
+}
+
+// PriceListRepo defines the interface for price list persistence operations.
+type PriceListRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.PriceListListFilter) ([]model.PriceList, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.PriceList, error)
+	Create(ctx context.Context, tx pgx.Tx, pl *model.PriceList) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdatePriceListRequest) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	ListItems(ctx context.Context, tx pgx.Tx, priceListID uuid.UUID, limit, offset int) ([]model.PriceListItem, int, error)
+	CreateItem(ctx context.Context, tx pgx.Tx, item *model.PriceListItem) error
+	DeleteItem(ctx context.Context, tx pgx.Tx, itemID uuid.UUID) error
+	FindItemsByProduct(ctx context.Context, tx pgx.Tx, priceListID, productID uuid.UUID, variantID *uuid.UUID, quantity int) ([]model.PriceListItem, error)
+}
+
+// DropshipOrderRepo defines the interface for dropship order persistence operations.
+type DropshipOrderRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.DropshipOrderListFilter) ([]model.DropshipOrder, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.DropshipOrder, error)
+	FindByIDForUpdate(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.DropshipOrder, error)
+	FindByOrderID(ctx context.Context, tx pgx.Tx, orderID uuid.UUID) ([]model.DropshipOrder, error)
+	Create(ctx context.Context, tx pgx.Tx, d *model.DropshipOrder) error
+	UpdateStatus(ctx context.Context, tx pgx.Tx, id uuid.UUID, status string) error
+	UpdateFields(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateDropshipStatusRequest) error
+	MarkSubmitAttempted(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+}
+
+// DropshipOrderItemRepo defines the interface for dropship order item persistence operations.
+type DropshipOrderItemRepo interface {
+	CreateItem(ctx context.Context, tx pgx.Tx, item *model.DropshipOrderItem) error
+	ListByDropshipOrderID(ctx context.Context, tx pgx.Tx, dropshipOrderID uuid.UUID) ([]model.DropshipOrderItem, error)
+	DeleteByDropshipOrderID(ctx context.Context, tx pgx.Tx, dropshipOrderID uuid.UUID) error
+}
+
+// RecurringOrderRepo defines the interface for recurring/subscription order persistence operations.
+type RecurringOrderRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.RecurringOrderListFilter) ([]model.RecurringOrder, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.RecurringOrder, error)
+	Create(ctx context.Context, tx pgx.Tx, ro *model.RecurringOrder) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateRecurringOrderRequest) error
+	UpdateStatus(ctx context.Context, tx pgx.Tx, id uuid.UUID, status string) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	FindDue(ctx context.Context, tx pgx.Tx, today time.Time) ([]model.RecurringOrder, error)
+	UpdateAfterCreation(ctx context.Context, tx pgx.Tx, id uuid.UUID, nextDate time.Time, count int) error
+	ListItems(ctx context.Context, tx pgx.Tx, recurringOrderID uuid.UUID) ([]model.RecurringOrderItem, error)
+	CreateItem(ctx context.Context, tx pgx.Tx, item *model.RecurringOrderItem) error
+	DeleteItemsByRecurringOrderID(ctx context.Context, tx pgx.Tx, recurringOrderID uuid.UUID) error
+}
+
+// RepricingRepo defines the interface for repricing rule and log persistence operations.
+type RepricingRepo interface {
+	ListRules(ctx context.Context, tx pgx.Tx, filter model.RepricingRuleListFilter) ([]model.RepricingRule, int, error)
+	FindRuleByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.RepricingRule, error)
+	CreateRule(ctx context.Context, tx pgx.Tx, rule *model.RepricingRule) error
+	UpdateRule(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateRepricingRuleRequest) error
+	DeleteRule(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	ListActiveRules(ctx context.Context, tx pgx.Tx) ([]model.RepricingRule, error)
+	UpdateRuleApplied(ctx context.Context, tx pgx.Tx, id uuid.UUID, productsAffected int) error
+	CreateLog(ctx context.Context, tx pgx.Tx, log *model.RepricingLog) error
+	ListLogByRule(ctx context.Context, tx pgx.Tx, ruleID uuid.UUID, limit, offset int) ([]model.RepricingLog, int, error)
+	ListLogByProduct(ctx context.Context, tx pgx.Tx, productID uuid.UUID, limit, offset int) ([]model.RepricingLog, int, error)
+	ListLog(ctx context.Context, tx pgx.Tx, limit, offset int) ([]model.RepricingLog, int, error)
+	GetSummary(ctx context.Context, tx pgx.Tx) (*model.RepricingSummary, error)
+}
+
+// StockSyncChannelRepo defines the interface for stock sync channel persistence operations.
+type StockSyncChannelRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.StockSyncChannelListFilter) ([]model.StockSyncChannel, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.StockSyncChannel, error)
+	ListEnabled(ctx context.Context, tx pgx.Tx) ([]model.StockSyncChannel, error)
+	Create(ctx context.Context, tx pgx.Tx, ch *model.StockSyncChannel) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateStockSyncChannelRequest) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+	UpdateSyncStatus(ctx context.Context, tx pgx.Tx, id uuid.UUID, lastError *string) error
+}
+
+// StockSyncEventRepo defines the interface for stock sync event persistence operations.
+type StockSyncEventRepo interface {
+	Create(ctx context.Context, tx pgx.Tx, event *model.StockSyncEvent) error
+	List(ctx context.Context, tx pgx.Tx, filter model.StockSyncEventListFilter) ([]model.StockSyncEvent, int, error)
+	CountRecentErrors(ctx context.Context, tx pgx.Tx) (int, error)
+	GetAvailableStock(ctx context.Context, tx pgx.Tx, productID uuid.UUID) (totalQty int, reservedQty int, err error)
+}
+
+// MessageTemplateRepo defines the interface for message template persistence operations.
+type MessageTemplateRepo interface {
+	List(ctx context.Context, tx pgx.Tx, filter model.MessageTemplateListFilter) ([]model.MessageTemplate, int, error)
+	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.MessageTemplate, error)
+	Create(ctx context.Context, tx pgx.Tx, template *model.MessageTemplate) error
+	Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateMessageTemplateRequest) error
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+}
+
+// LicenseRepo provides database operations for license token tracking.
+type LicenseRepo interface {
+	IsTokenUsed(ctx context.Context, pool *pgxpool.Pool, jti uuid.UUID) (bool, error)
+	// MarkTokenUsed atomically claims a token JTI. Returns true if claimed, false if already used.
+	// tenantID may be nil when tenant doesn't exist yet (pre-registration claim).
+	MarkTokenUsed(ctx context.Context, pool *pgxpool.Pool, jti uuid.UUID, tenantID *uuid.UUID, email, plan string) (bool, error)
+	// UpdateClaimedTenant sets the tenant_id on a previously claimed token.
+	UpdateClaimedTenant(ctx context.Context, pool *pgxpool.Pool, jti, tenantID uuid.UUID) error
+}
+
+// InvitationRepo defines the interface for invitation persistence operations.
+type InvitationRepo interface {
+	Create(ctx context.Context, tx pgx.Tx, inv *model.Invitation) error
+	List(ctx context.Context, tx pgx.Tx, limit, offset int) ([]model.Invitation, int, error)
+	FindByToken(ctx context.Context, pool *pgxpool.Pool, token string) (*model.Invitation, error) // SECURITY DEFINER, no RLS
+	MarkUsed(ctx context.Context, pool *pgxpool.Pool, token string) error                         // SECURITY DEFINER, no RLS
+	Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error
+}
+
+// BillingRepo provides database operations for Stripe billing integration.
+// All operations use SECURITY DEFINER functions via pool (no RLS context needed).
+type BillingRepo interface {
+	// Checkout session lifecycle
+	CreateCheckoutSession(ctx context.Context, pool *pgxpool.Pool, stripeSessionID, plan, interval string) error
+	CompleteCheckoutSession(ctx context.Context, pool *pgxpool.Pool, stripeSessionID, email string, refs model.CheckoutSessionStripeRefs) (bool, error)
+	GetCheckoutSession(ctx context.Context, pool *pgxpool.Pool, stripeSessionID string) (*model.BillingCheckoutSession, error)
+	ClaimCheckoutSession(ctx context.Context, pool *pgxpool.Pool, stripeSessionID string) (bool, error)
+	UpdateClaimedCheckoutTenant(ctx context.Context, pool *pgxpool.Pool, stripeSessionID string, tenantID uuid.UUID) error
+	// FindUnreconciledCheckoutSessions returns registered checkout sessions that have a
+	// tenant but no subscription row — i.e. finalization partially failed. Must be called
+	// with a pool that bypasses RLS (the worker pool), as it spans tenants.
+	FindUnreconciledCheckoutSessions(ctx context.Context, pool *pgxpool.Pool, limit int) ([]model.BillingCheckoutSession, error)
+
+	// Billing customers
+	CreateBillingCustomer(ctx context.Context, pool *pgxpool.Pool, tenantID uuid.UUID, stripeCustomerID string) error
+	GetCustomerByStripeID(ctx context.Context, pool *pgxpool.Pool, stripeCustomerID string) (*model.BillingCustomer, error)
+
+	// Subscriptions
+	UpsertSubscription(ctx context.Context, pool *pgxpool.Pool, sub *model.BillingSubscription) error
+	UpdateSubscriptionByStripeID(ctx context.Context, pool *pgxpool.Pool, stripeSubID, status string, periodStart, periodEnd, canceledAt *time.Time) error
+	GetSubscriptionByTenant(ctx context.Context, tx pgx.Tx) (*model.BillingSubscription, error)
+
+	// Tenant plan sync
+	SyncTenantPlan(ctx context.Context, pool *pgxpool.Pool, tenantID uuid.UUID, settingsJSON []byte) error
+}

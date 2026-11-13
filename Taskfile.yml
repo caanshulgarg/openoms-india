@@ -1,0 +1,130 @@
+# OpenOMS — Task runner (https://taskfile.dev)
+version: "3"
+
+dotenv: ['.env']
+
+vars:
+  COMPOSE_FILE: docker-compose.dev.yml
+  COMPOSE: docker compose -f docker-compose.dev.yml
+  MIGRATE_DSN: "postgres://openoms:openoms-dev-password@localhost:5433/openoms?sslmode=disable"
+
+tasks:
+  up:
+    desc: Start development containers
+    cmds:
+      - "{{.COMPOSE}} up -d"
+      - echo "Waiting for PostgreSQL to be ready..."
+      - >
+        until {{.COMPOSE}} exec -T postgres pg_isready -U openoms > /dev/null 2>&1; do
+          sleep 1;
+        done
+      - echo "PostgreSQL is ready."
+
+  down:
+    desc: Stop development containers
+    cmds:
+      - "{{.COMPOSE}} down"
+
+  clean:
+    desc: Stop containers and remove volumes
+    cmds:
+      - "{{.COMPOSE}} down -v"
+
+  migrate:
+    desc: Run database migrations up
+    cmds:
+      - golang-migrate -path apps/api-server/migrations -database "{{.MIGRATE_DSN}}" up
+
+  migrate-down:
+    desc: Rollback the last migration
+    cmds:
+      - golang-migrate -path apps/api-server/migrations -database "{{.MIGRATE_DSN}}" down 1
+
+  seed:
+    desc: Load seed data (1 tenant + 1 admin)
+    cmds:
+      - "{{.COMPOSE}} exec -T postgres psql -U openoms -d openoms < scripts/seed.sql"
+
+  reset:
+    desc: Drop and re-create database
+    cmds:
+      - golang-migrate -path apps/api-server/migrations -database "{{.MIGRATE_DSN}}" drop -f
+      - task: migrate
+      - task: seed
+
+  run:
+    desc: Run the API server
+    dir: apps/api-server
+    cmds:
+      - go run ./cmd/server
+
+  test:
+    desc: Run all tests with race detection and coverage
+    cmds:
+      - cd apps/api-server && go test -race -cover ./...
+      - cd packages/allegro-go-sdk && go test ./...
+      - cd packages/inpost-go-sdk && go test ./...
+      - cd packages/order-engine && go test ./...
+      - cd packages/dhl-go-sdk && go test ./...
+      - cd packages/ksef-go-sdk && go test ./...
+      - cd packages/amazon-sp-sdk && go test ./...
+      - cd packages/dpd-go-sdk && go test ./...
+      - cd packages/gls-go-sdk && go test ./...
+      - cd packages/btp-go-sdk && go test ./...
+      - cd packages/shiprocket-go-sdk && go test ./...
+      - cd packages/delhivery-go-sdk && go test ./...
+
+  test:quiet:
+    desc: Run all tests (quiet — summary only)
+    cmds:
+      - cd apps/api-server && go test -race ./... 2>&1 | tail -5
+      - cd packages/allegro-go-sdk && go test ./... 2>&1 | tail -2
+      - cd packages/inpost-go-sdk && go test ./... 2>&1 | tail -2
+      - cd packages/order-engine && go test ./... 2>&1 | tail -2
+      - cd packages/dhl-go-sdk && go test ./... 2>&1 | tail -2
+      - cd packages/ksef-go-sdk && go test ./... 2>&1 | tail -2
+      - cd packages/amazon-sp-sdk && go test ./... 2>&1 | tail -2
+      - cd packages/dpd-go-sdk && go test ./... 2>&1 | tail -2
+      - cd packages/gls-go-sdk && go test ./... 2>&1 | tail -2
+      - cd packages/btp-go-sdk && go test ./... 2>&1 | tail -2
+      - cd packages/shiprocket-go-sdk && go test ./... 2>&1 | tail -2
+      - cd packages/delhivery-go-sdk && go test ./... 2>&1 | tail -2
+
+  lint:
+    desc: Run linter on all modules
+    cmds:
+      - cd apps/api-server && golangci-lint run ./...
+      - cd packages/allegro-go-sdk && golangci-lint run ./...
+      - cd packages/inpost-go-sdk && golangci-lint run ./...
+      - cd packages/order-engine && golangci-lint run ./...
+
+  fmt:
+    desc: Format all Go source files
+    cmds:
+      - gofmt -w -s .
+
+  dashboard:
+    desc: Start the dashboard dev server
+    dir: apps/dashboard
+    env:
+      PORT: "3000"
+    cmds:
+      - npm run dev
+
+  dashboard:install:
+    desc: Install dashboard dependencies
+    dir: apps/dashboard
+    cmds:
+      - npm ci
+
+  dev:
+    desc: Start API server + dashboard in parallel
+    deps: [run, dashboard]
+
+  setup:
+    desc: Full development setup (dependencies + containers + migrations + seed)
+    cmds:
+      - task: dashboard:install
+      - task: up
+      - task: migrate
+      - task: seed

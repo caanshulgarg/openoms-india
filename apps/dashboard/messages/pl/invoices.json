@@ -1,0 +1,93 @@
+{
+  "invoices": {
+    "allKsef": "Wszystkie (KSeF)",
+    "allProviders": "Wszyscy dostawcy",
+    "allStatuses": "Wszystkie statusy",
+    "anulujFakture": "Anuluj fakturę",
+    "columns": {
+      "grossAmount": "Kwota brutto",
+      "issueDate": "Data wystawienia",
+      "number": "Numer",
+      "order": "Zamówienie",
+      "provider": "Dostawca",
+      "type": "Typ"
+    },
+    "czyNaPewnoChceszAnulowacTeFaktureTaOperacjaJestNie": "Czy na pewno chcesz anulować tę fakturę? Ta operacja jest nieodwracalna.",
+    "detail": {
+      "backToList": "Powrót do listy",
+      "externalId": "ID zewnętrzne"
+    },
+    "fakturaWyslanaDoKsef": "Faktura wysłana do KSeF",
+    "fakturaZostalaAnulowana": "Faktura została anulowana",
+    "filters": {
+      "allKsef": "Wszystkie (KSeF)",
+      "allProviders": "Wszyscy dostawcy",
+      "allStatuses": "Wszystkie statusy"
+    },
+    "invoice": {
+      "error": "Błąd"
+    },
+    "invoiceCancelled": "Faktura została anulowana",
+    "invoiceSentToKsef": "Faktura wysłana do KSeF",
+    "ksefBulkErrors": "Błędy: {errors}",
+    "ksefBulkSent": "Wysłano {sent} z {total} faktur do KSeF",
+    "ksefErrors": "Błędy: {errors}",
+    "ksefSent": "Wysłano {sent} z {total} faktur do KSeF",
+    "loadError": "Nie udało się załadować danych",
+    "nieZnalezionoFakturDoWyswietlenia": "Nie znaleziono faktur do wyświetlenia.",
+    "noInvoices": "Brak faktur do wyświetlenia",
+    "paymentDueDate": "Termin płatności",
+    "provider": "Dostawca",
+    "retry": "Spróbuj ponownie",
+    "sendDate": "Data wysłania",
+    "sendToKsef": "Wyślij do KSeF ({count})",
+    "sprawdzStatus": "Sprawdź status",
+    "subtitle": "Lista wystawionych faktur",
+    "title": "Faktury",
+    "wyslijDoKsef": "Wyślij do KSeF",
+    "ksefStatusUpdated": "Status KSeF zaktualizowany",
+    "invoicingSettingsSaved": "Ustawienia fakturowania zapisane",
+    "invoicingSettingsSaveFailed": "Nie udało się zapisać ustawień",
+    "invoicingProviderDeleted": "Dostawca faktur został usunięty"
+  },
+  "ksef": {
+    "authData": "Dane autoryzacyjne",
+    "authDescription": "NIP firmy i token autoryzacyjny z portalu KSeF",
+    "authToken": "Token autoryzacyjny",
+    "authTokenPlaceholder": "Token z portalu KSeF",
+    "autoSendNewInvoicesToKsef": "Automatycznie wysyłaj nowo utworzone faktury do KSeF.",
+    "autoSendRetry": "Nieudane wysyłki będą automatycznie ponawiane (maks. 3 próby).",
+    "automaticSending": "Automatyczne wysyłanie",
+    "autosendDisabled": "Auto-send wyłączony",
+    "autosendEnabled": "Auto-send włączony",
+    "checkKsefConnectionWorks": "Sprawdź czy połączenie z KSeF działa poprawnie",
+    "city": "Miasto",
+    "companyData": "Dane firmy (sprzedawca)",
+    "companyName": "Nazwa firmy",
+    "companyNamePlaceholder": "Nazwa firmy sp. z o.o.",
+    "country": "Kraj",
+    "daneFirmyUzywaneWFakturachStrukturalnychKsef": "Dane firmy używane w fakturach strukturalnych KSeF",
+    "enableKsefForAutoSending": "Włącz integrację KSeF, aby korzystać z automatycznego wysyłania.",
+    "enableOrDisableSendingInvoicesToKsef": "Włącz lub wyłącz wysyłanie faktur do KSeF",
+    "environmentDescription": "Wybierz środowisko KSeF (testowe do testów, produkcyjne do wysyłki prawdziwych faktur)",
+    "environments": {
+      "production": "Produkcyjne (ksef.mf.gov.pl)",
+      "test": "Testowe (ksef-test.mf.gov.pl)"
+    },
+    "generateTokenHint": "Wygeneruj token w portalu {portal}",
+    "integrationStatus": "Status integracji",
+    "ksefConnectionTest": "Test połączenia",
+    "ksefConnectionTestError": "Nie udało się przetestować połączenia",
+    "ksefDisabled": "KSeF wyłączony",
+    "ksefEnabled": "KSeF włączony",
+    "ksefSettingsSaveError": "Nie udało się zapisać ustawień",
+    "nipHint": "10-cyfrowy numer identyfikacji podatkowej",
+    "postalCode": "Kod pocztowy",
+    "settingsSaved": "Ustawienia KSeF zapisane",
+    "srodowisko": "Środowisko",
+    "street": "Ulica",
+    "subtitle": "Konfiguracja integracji z Krajowym Systemem e-Faktur",
+    "title": "KSeF - Krajowy System e-Faktur",
+    "wybierzSrodowisko": "Wybierz środowisko"
+  }
+}

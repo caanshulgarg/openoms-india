@@ -1,0 +1,523 @@
+package worker
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/openoms-org/openoms/apps/api-server/internal/crypto"
+	"github.com/openoms-org/openoms/apps/api-server/internal/database"
+	"github.com/openoms-org/openoms/apps/api-server/internal/integration"
+	"github.com/openoms-org/openoms/apps/api-server/internal/model"
+	"github.com/openoms-org/openoms/apps/api-server/internal/repository"
+	"github.com/openoms-org/openoms/apps/api-server/internal/service"
+)
+
+// OrderMapper converts a MarketplaceOrder into a model.Order for a specific provider.
+// The default implementation is used if nil.
+type OrderMapper func(mo integration.MarketplaceOrder, ti TenantIntegration, req model.CreateOrderRequest) model.Order
+
+// LabelGenerator generates a shipping label for a shipment.
+// Implemented by service.LabelService.
+type LabelGenerator interface {
+	GenerateLabel(ctx context.Context, tenantID, shipmentID uuid.UUID, req model.GenerateLabelRequest, actorID uuid.UUID, ip string) (*model.Shipment, error)
+}
+
+// MarketplaceOrderPoller is a generic order poller for any marketplace provider.
+type MarketplaceOrderPoller struct {
+	pool           *pgxpool.Pool
+	encryptionKey  []byte
+	orderRepo      repository.OrderRepo
+	shipmentRepo   repository.ShipmentRepo
+	auditRepo      repository.AuditRepo
+	labelGenerator LabelGenerator
+	logger         *slog.Logger
+	providerName   string
+	interval       time.Duration
+	// mapOrder allows provider-specific customization of the order mapping.
+	// If nil, a default mapping is used.
+	mapOrder OrderMapper
+	// fulfillment optionally routes each newly imported marketplace order through the
+	// fulfillment commands (OPE-416). Gated/best-effort via the service itself; nil
+	// (or disabled) is a no-op. Wired by WithFulfillment.
+	fulfillment *service.FulfillmentService
+}
+
+// MarketplaceOrderPollerConfig configures a MarketplaceOrderPoller.
+type MarketplaceOrderPollerConfig struct {
+	Pool           *pgxpool.Pool
+	EncryptionKey  []byte
+	OrderRepo      repository.OrderRepo
+	ShipmentRepo   repository.ShipmentRepo
+	AuditRepo      repository.AuditRepo
+	LabelGenerator LabelGenerator
+	Logger         *slog.Logger
+	ProviderName   string
+	Interval       time.Duration
+	MapOrder       OrderMapper
+}
+
+// NewMarketplaceOrderPoller creates a new MarketplaceOrderPoller from the given config.
+func NewMarketplaceOrderPoller(cfg MarketplaceOrderPollerConfig) *MarketplaceOrderPoller {
+	return &MarketplaceOrderPoller{
+		pool:           cfg.Pool,
+		encryptionKey:  cfg.EncryptionKey,
+		orderRepo:      cfg.OrderRepo,
+		shipmentRepo:   cfg.ShipmentRepo,
+		auditRepo:      cfg.AuditRepo,
+		labelGenerator: cfg.LabelGenerator,
+		logger:         cfg.Logger,
+		providerName:   cfg.ProviderName,
+		interval:       cfg.Interval,
+		mapOrder:       cfg.MapOrder,
+	}
+}
+
+// WithFulfillment wires the OPE-416 fulfillment service so each newly imported
+// marketplace order gets its fulfillment process + order.created orchestration event
+// created in the SAME transaction as the order insert. Returns the poller for
+// chaining. Safe to omit: the service is gated (no-op when nil/disabled).
+func (p *MarketplaceOrderPoller) WithFulfillment(f *service.FulfillmentService) *MarketplaceOrderPoller {
+	if p == nil {
+		return nil
+	}
+	p.fulfillment = f
+	return p
+}
+
+// Name returns the unique name of this worker.
+func (p *MarketplaceOrderPoller) Name() string {
+	return p.providerName + "_order_poller"
+}
+
+// Interval returns how often this worker should run.
+func (p *MarketplaceOrderPoller) Interval() time.Duration {
+	return p.interval
+}
+
+// Run polls the marketplace for new orders and imports them.
+func (p *MarketplaceOrderPoller) Run(ctx context.Context) error {
+	tis, err := ListActiveIntegrations(ctx, p.pool, p.providerName)
+	if err != nil {
+		return err
+	}
+
+	totalOrders := 0
+
+	for _, ti := range tis {
+		if err := checkWorkerContext(ctx); err != nil {
+			return err
+		}
+		seenOrders := make(map[string]struct{}) // per-tenant dedup within a single poll page
+
+		credJSON, err := crypto.Decrypt(ti.Credentials, p.encryptionKey)
+		if err != nil {
+			p.logger.Error("failed to decrypt credentials",
+				"integration_id", ti.IntegrationID,
+				"provider", p.providerName,
+				"tenant_id", ti.TenantID,
+				"error", err,
+			)
+			continue
+		}
+
+		provider, err := integration.NewMarketplaceProvider(p.providerName, credJSON, ti.Settings)
+		if err != nil {
+			p.logger.Error("failed to create provider",
+				"integration_id", ti.IntegrationID,
+				"provider", p.providerName,
+				"tenant_id", ti.TenantID,
+				"error", err,
+			)
+			continue
+		}
+		if p.providerName == "allegro" {
+			attachAllegroTokenPersist(ctx, provider, p.pool, p.encryptionKey, ti.IntegrationID, credJSON)
+		}
+		cursor := ""
+		if ti.SyncCursor != nil {
+			cursor = *ti.SyncCursor
+		}
+
+		orders, newCursor, err := provider.PollOrders(ctx, cursor)
+		if err != nil {
+			if isTerminalOAuthCredentialError(p.providerName, err) {
+				markIntegrationRequiresReauth(ctx, p.pool, p.providerName,
+					ti.TenantID.String(), ti.IntegrationID.String(), p.logger)
+			}
+			p.logger.Error("failed to poll orders",
+				"integration_id", ti.IntegrationID,
+				"provider", p.providerName,
+				"tenant_id", ti.TenantID,
+				"error", err,
+			)
+			closeProvider(provider)
+			continue
+		}
+
+		for _, mo := range orders {
+			if err := checkWorkerContext(ctx); err != nil {
+				closeProvider(provider)
+				return err
+			}
+			// In-memory dedup: skip if already processed in this run
+			if _, seen := seenOrders[mo.ExternalID]; seen {
+				continue
+			}
+			seenOrders[mo.ExternalID] = struct{}{}
+
+			req := integration.MarketplaceOrderToCreateRequest(mo, p.providerName, ti.IntegrationID)
+			order := p.buildOrder(mo, ti, req)
+
+			created := false
+			if err := database.WithTenant(ctx, p.pool, ti.TenantID, func(tx pgx.Tx) error {
+				var err error
+				created, err = insertMarketplaceOrderIfNotExists(ctx, tx, p.orderRepo, p.providerName, mo.ExternalID, &order)
+				if err != nil || !created {
+					return err
+				}
+
+				// Log audit entry for the created order
+				if p.auditRepo != nil {
+					if err := p.auditRepo.Log(ctx, tx, model.AuditEntry{
+						TenantID:   ti.TenantID,
+						UserID:     uuid.Nil,
+						Action:     "order.created",
+						EntityType: "order",
+						EntityID:   order.ID,
+						Changes:    map[string]string{"source": p.providerName, "external_id": mo.ExternalID, "auto": "true"},
+						IPAddress:  "0.0.0.0",
+					}); err != nil {
+						p.logger.Error("worker: failed to log audit for order creation",
+							"order_id", order.ID, "error", err)
+					}
+				}
+
+				// Route the new marketplace order through the fulfillment commands
+				// (OPE-416): create its fulfillment process + enqueue the orchestration
+				// event in the SAME transaction as the order insert. No-op when the gated
+				// service is nil/disabled. Atomic with the import (mirrors OrderService.Create).
+				if p.fulfillment != nil {
+					if _, err := p.fulfillment.EnsureProcessForOrder(ctx, tx, ti.TenantID, order.ID); err != nil {
+						return err
+					}
+				}
+
+				p.logger.Info("worker: order created",
+					"operation", "order.create",
+					"tenant_id", ti.TenantID,
+					"entity_id", order.ID,
+					"external_id", mo.ExternalID,
+					"provider", p.providerName,
+					"integration_id", ti.IntegrationID,
+				)
+				return nil
+			}); err != nil {
+				p.logger.Error("failed to create order", "integration_id", ti.IntegrationID, "external_id", mo.ExternalID, "error", err)
+				continue
+			}
+			if !created {
+				p.logger.Debug("worker: duplicate external order skipped",
+					"integration_id", ti.IntegrationID,
+					"external_id", mo.ExternalID,
+					"provider", p.providerName,
+				)
+				continue
+			}
+			totalOrders++
+
+			// Auto-create shipment based on integration carrier mapping (best effort)
+			if p.shipmentRepo != nil {
+				dm := ""
+				if order.DeliveryMethod != nil {
+					dm = *order.DeliveryMethod
+				}
+				carrier := resolveCarrier(ti.Settings, dm)
+				if carrier != "" {
+					shipment, err := p.autoCreateShipment(ctx, ti, order, carrier)
+					if err != nil {
+						p.logger.Error("auto-create shipment failed (non-fatal)",
+							"order_id", order.ID,
+							"carrier", carrier,
+							"error", err,
+						)
+					} else {
+						p.logger.Info("auto-created shipment for marketplace order",
+							"order_id", order.ID,
+							"carrier", carrier,
+						)
+
+						// Auto-generate label if enabled (best effort)
+						if shipment != nil && p.labelGenerator != nil && shouldAutoLabel(ti.Settings) {
+							if err := p.autoGenerateLabel(ctx, ti, order, shipment); err != nil {
+								p.logger.Error("auto-generate label failed (non-fatal)",
+									"order_id", order.ID,
+									"shipment_id", shipment.ID,
+									"error", err,
+								)
+							} else {
+								p.logger.Info("auto-generated label for marketplace order",
+									"order_id", order.ID,
+									"shipment_id", shipment.ID,
+								)
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Warn if cursor didn't advance — may indicate a stall
+		if newCursor == cursor && len(orders) == 0 {
+			p.logger.Warn("cursor unchanged after poll — possible stall",
+				"provider", p.providerName,
+				"tenant_id", ti.TenantID,
+				"cursor", cursor,
+			)
+		}
+		// Update sync cursor (bypasses RLS)
+		if newCursor != cursor {
+			if _, err := p.pool.Exec(ctx,
+				"UPDATE integrations SET sync_cursor = $1, last_sync_at = NOW() WHERE id = $2",
+				newCursor, ti.IntegrationID,
+			); err != nil {
+				p.logger.Error("failed to update sync cursor",
+					"operation", "integration.update_cursor",
+					"tenant_id", ti.TenantID,
+					"entity_id", ti.IntegrationID,
+					"error", err,
+				)
+			} else {
+				p.logger.Info("worker: sync cursor updated",
+					"operation", "integration.update_cursor",
+					"tenant_id", ti.TenantID,
+					"entity_id", ti.IntegrationID,
+					"new_cursor", newCursor,
+				)
+			}
+		}
+
+		closeProvider(provider)
+	}
+
+	p.logger.Info(p.providerName+" order poller completed", "tenants", len(tis), "orders", totalOrders)
+	return nil
+}
+
+func insertMarketplaceOrderIfNotExists(
+	ctx context.Context,
+	tx pgx.Tx,
+	orderRepo repository.OrderRepo,
+	source string,
+	externalID string,
+	order *model.Order,
+) (bool, error) {
+	existing, err := orderRepo.FindByExternalID(ctx, tx, source, externalID)
+	if err != nil {
+		return false, err
+	}
+	if existing != nil {
+		return false, nil
+	}
+
+	return orderRepo.CreateIfExternalIDNotExists(ctx, tx, order)
+}
+
+// newBaseMarketplaceOrder seeds the model.Order and metadata map that every marketplace
+// mapper builds identically: the core order fields, the pending-default payment status, the
+// marshaled shipping address + items, and a metadata map seeded with external_id. Each mapper
+// extends the returned order (provider-specific fields) and metadata before marshaling
+// metadata into order.Metadata and setting order.Tags.
+func newBaseMarketplaceOrder(mo integration.MarketplaceOrder, ti TenantIntegration, req model.CreateOrderRequest) (model.Order, map[string]any) {
+	order := model.Order{
+		ID:            uuid.New(),
+		TenantID:      ti.TenantID,
+		ExternalID:    req.ExternalID,
+		Source:        req.Source,
+		IntegrationID: req.IntegrationID,
+		Status:        "new",
+		CustomerName:  req.CustomerName,
+		CustomerEmail: req.CustomerEmail,
+		CustomerPhone: req.CustomerPhone,
+		TotalAmount:   req.TotalAmount,
+		Currency:      req.Currency,
+		OrderedAt:     req.OrderedAt,
+		PaymentMethod: req.PaymentMethod,
+	}
+
+	if req.PaymentStatus != nil {
+		order.PaymentStatus = *req.PaymentStatus
+	} else {
+		order.PaymentStatus = "pending"
+	}
+
+	addrJSON, err := json.Marshal(mo.ShippingAddress)
+	if err == nil {
+		order.ShippingAddress = addrJSON
+	}
+
+	itemsJSON, err := json.Marshal(mo.Items)
+	if err == nil {
+		order.Items = itemsJSON
+	}
+
+	metadata := map[string]any{"external_id": mo.ExternalID}
+	return order, metadata
+}
+
+func (p *MarketplaceOrderPoller) buildOrder(mo integration.MarketplaceOrder, ti TenantIntegration, req model.CreateOrderRequest) model.Order {
+	if p.mapOrder != nil {
+		return p.mapOrder(mo, ti, req)
+	}
+
+	order, metadata := newBaseMarketplaceOrder(mo, ti, req)
+
+	// Metadata with external_id for duplicate detection
+	metadataJSON, _ := json.Marshal(metadata)
+	order.Metadata = metadataJSON
+
+	order.Tags = []string{}
+
+	// Default: extract delivery method from RawData
+	if mo.RawData != nil {
+		if dmName, ok := mo.RawData["delivery_method_name"].(string); ok {
+			order.DeliveryMethod = &dmName
+		}
+		if ppID, ok := mo.RawData["pickup_point_id"].(string); ok {
+			order.PickupPointID = &ppID
+		}
+	}
+
+	return order
+}
+
+// resolveCarrier looks up the delivery method in carrier_mapping, falling back to default_carrier.
+func resolveCarrier(settings json.RawMessage, deliveryMethod string) string {
+	if len(settings) == 0 {
+		return ""
+	}
+	var s struct {
+		AutoCreateShipment bool              `json:"auto_create_shipment"`
+		DefaultCarrier     string            `json:"default_carrier"`
+		CarrierMapping     map[string]string `json:"carrier_mapping"`
+	}
+	if err := json.Unmarshal(settings, &s); err != nil || !s.AutoCreateShipment {
+		return ""
+	}
+	// Substring matching in carrier_mapping
+	if deliveryMethod != "" && len(s.CarrierMapping) > 0 {
+		deliveryLower := strings.ToLower(deliveryMethod)
+		for key, provider := range s.CarrierMapping {
+			if strings.Contains(deliveryLower, strings.ToLower(key)) {
+				return provider
+			}
+		}
+	}
+	return s.DefaultCarrier
+}
+
+func (p *MarketplaceOrderPoller) autoCreateShipment(ctx context.Context, ti TenantIntegration, order model.Order, carrier string) (*model.Shipment, error) {
+	shipment := &model.Shipment{
+		ID:       uuid.New(),
+		TenantID: ti.TenantID,
+		OrderID:  order.ID,
+		Provider: carrier,
+		Status:   "created",
+	}
+	carrierData := map[string]any{}
+	if order.PickupPointID != nil && *order.PickupPointID != "" {
+		carrierData["target_point"] = *order.PickupPointID
+	}
+	if len(carrierData) > 0 {
+		cd, _ := json.Marshal(carrierData)
+		shipment.CarrierData = cd
+	} else {
+		shipment.CarrierData = json.RawMessage("{}")
+	}
+
+	err := database.WithTenant(ctx, p.pool, ti.TenantID, func(tx pgx.Tx) error {
+		if err := p.shipmentRepo.Create(ctx, tx, shipment); err != nil {
+			return err
+		}
+		if p.auditRepo != nil {
+			return p.auditRepo.Log(ctx, tx, model.AuditEntry{
+				TenantID:   ti.TenantID,
+				UserID:     uuid.Nil,
+				Action:     "shipment.created",
+				EntityType: "shipment",
+				EntityID:   shipment.ID,
+				Changes:    map[string]string{"order_id": order.ID.String(), "provider": carrier, "auto": "true"},
+				IPAddress:  "0.0.0.0",
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return shipment, nil
+}
+
+// shouldAutoLabel checks if auto_generate_label is enabled in integration settings.
+func shouldAutoLabel(settings json.RawMessage) bool {
+	if len(settings) == 0 {
+		return false
+	}
+	var s struct {
+		AutoGenerateLabel bool `json:"auto_generate_label"`
+	}
+	if err := json.Unmarshal(settings, &s); err != nil {
+		return false
+	}
+	return s.AutoGenerateLabel
+}
+
+// autoLabelSettings holds defaults for auto-label generation from integration settings.
+type autoLabelSettings struct {
+	DefaultParcelSize    string `json:"default_parcel_size"`
+	DefaultSendingMethod string `json:"default_sending_method"`
+}
+
+func parseAutoLabelSettings(settings json.RawMessage) autoLabelSettings {
+	var s autoLabelSettings
+	if len(settings) > 0 {
+		_ = json.Unmarshal(settings, &s)
+	}
+	return s
+}
+
+func (p *MarketplaceOrderPoller) autoGenerateLabel(ctx context.Context, ti TenantIntegration, order model.Order, shipment *model.Shipment) error {
+	als := parseAutoLabelSettings(ti.Settings)
+
+	// Determine service type from carrier + target point
+	serviceType := ""
+	hasTargetPoint := order.PickupPointID != nil && *order.PickupPointID != ""
+	switch shipment.Provider {
+	case "inpost":
+		if hasTargetPoint {
+			serviceType = "inpost_locker_standard"
+		} else {
+			serviceType = "inpost_courier_standard"
+		}
+	default:
+		serviceType = shipment.Provider + "_standard"
+	}
+
+	req := model.GenerateLabelRequest{
+		ServiceType:   serviceType,
+		ParcelSize:    als.DefaultParcelSize,
+		LabelFormat:   "pdf",
+		SendingMethod: als.DefaultSendingMethod,
+	}
+
+	// target_point is already in carrier_data; LabelService reads it from there
+
+	_, err := p.labelGenerator.GenerateLabel(ctx, ti.TenantID, shipment.ID, req, uuid.Nil, "0.0.0.0")
+	return err
+}

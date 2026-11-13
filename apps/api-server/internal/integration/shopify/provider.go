@@ -1,0 +1,357 @@
+// Package shopify implements the Shopify marketplace provider.
+package shopify
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"maps"
+	"strconv"
+	"strings"
+	"time"
+
+	shopifysdk "github.com/openoms-org/openoms/packages/shopify-go-sdk"
+
+	"github.com/openoms-org/openoms/apps/api-server/internal/integration"
+	"github.com/openoms-org/openoms/apps/api-server/internal/model"
+	"github.com/openoms-org/openoms/apps/api-server/internal/netutil"
+)
+
+func init() {
+	integration.RegisterMarketplaceProvider("shopify", func(credentials json.RawMessage, settings json.RawMessage) (integration.MarketplaceProvider, error) {
+		return NewProvider(credentials, settings)
+	})
+}
+
+// Credentials is the JSON structure stored in encrypted integration credentials.
+type Credentials struct {
+	ShopDomain  string `json:"shop_domain"`
+	AccessToken string `json:"access_token"`
+	APIVersion  string `json:"api_version,omitempty"`
+}
+
+// Provider implements integration.MarketplaceProvider for Shopify.
+type Provider struct {
+	client *shopifysdk.Client
+	logger *slog.Logger
+}
+
+// NewProvider creates a Shopify MarketplaceProvider from encrypted credentials.
+func NewProvider(credentials json.RawMessage, _ json.RawMessage) (*Provider, error) {
+	var creds Credentials
+	if err := json.Unmarshal(credentials, &creds); err != nil {
+		return nil, fmt.Errorf("shopify: parse credentials: %w", err)
+	}
+
+	if creds.ShopDomain == "" {
+		return nil, fmt.Errorf("shopify: shop_domain is required")
+	}
+	if creds.AccessToken == "" {
+		return nil, fmt.Errorf("shopify: access_token is required")
+	}
+
+	opts := []shopifysdk.Option{
+		shopifysdk.WithHTTPClient(netutil.SafeHTTPClient(30 * time.Second)),
+	}
+	if creds.APIVersion != "" {
+		opts = append(opts, shopifysdk.WithAPIVersion(creds.APIVersion))
+	}
+
+	client := shopifysdk.NewClient(creds.ShopDomain, creds.AccessToken, opts...)
+
+	return &Provider{
+		client: client,
+		logger: slog.Default().With("provider", "shopify"),
+	}, nil
+}
+
+// ProviderName returns the marketplace provider identifier.
+func (p *Provider) ProviderName() string { return "shopify" }
+
+// PollOrders polls Shopify for orders updated after the given cursor.
+// The cursor is the updated_at value (ISO8601) of the last polled order.
+func (p *Provider) PollOrders(ctx context.Context, cursor string) ([]integration.MarketplaceOrder, string, error) {
+	params := shopifysdk.OrderListParams{
+		Limit:  50,
+		Status: "any",
+	}
+	if cursor != "" {
+		params.UpdatedAtMin = cursor
+	}
+
+	shopifyOrders, err := p.client.Orders.List(ctx, params)
+	if err != nil {
+		return nil, cursor, fmt.Errorf("shopify: poll orders: %w", err)
+	}
+
+	if len(shopifyOrders) == 0 {
+		return nil, cursor, nil
+	}
+
+	var orders []integration.MarketplaceOrder
+	newCursor := cursor
+
+	for _, so := range shopifyOrders {
+		mo, err := p.mapShopifyOrder(&so)
+		if err != nil {
+			return nil, cursor, fmt.Errorf("shopify: map order %d: %w", so.ID, err)
+		}
+		orders = append(orders, mo)
+
+		if so.UpdatedAt > newCursor {
+			newCursor = so.UpdatedAt
+		}
+	}
+
+	return orders, newCursor, nil
+}
+
+// GetOrder retrieves a single order from Shopify by external ID.
+func (p *Provider) GetOrder(ctx context.Context, externalID string) (*integration.MarketplaceOrder, error) {
+	id, err := strconv.ParseInt(externalID, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("shopify: invalid order ID %q: %w", externalID, err)
+	}
+
+	order, err := p.client.Orders.Get(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("shopify: get order %s: %w", externalID, err)
+	}
+
+	mo, err := p.mapShopifyOrder(order)
+	if err != nil {
+		return nil, fmt.Errorf("shopify: map order %s: %w", externalID, err)
+	}
+	return &mo, nil
+}
+
+// PushOffer creates a Shopify product from a product and listing data.
+// It returns the first created Shopify variant ID, which is the ID later used for price updates.
+func (p *Provider) PushOffer(ctx context.Context, product *model.Product, listingData map[string]any) (string, error) {
+	data := make(map[string]any)
+	maps.Copy(data, listingData)
+	if _, ok := data["title"]; !ok {
+		data["title"] = product.Name
+	}
+	if _, ok := data["body_html"]; !ok && product.DescriptionLong != "" {
+		data["body_html"] = product.DescriptionLong
+	}
+	if _, ok := data["variants"]; !ok {
+		variant := map[string]any{
+			"price":                fmt.Sprintf("%.2f", product.Price),
+			"inventory_management": "shopify",
+			"inventory_quantity":   product.AvailableStock,
+		}
+		if product.SKU != nil {
+			variant["sku"] = *product.SKU
+		}
+		if product.EAN != nil {
+			variant["barcode"] = *product.EAN
+		}
+		data["variants"] = []map[string]any{variant}
+	}
+
+	created, err := p.client.Products.Create(ctx, data)
+	if err != nil {
+		return "", fmt.Errorf("shopify: create product: %w", err)
+	}
+	if created == nil || len(created.Variants) == 0 || created.Variants[0].ID == 0 {
+		return "", fmt.Errorf("shopify: create product returned no variant ID")
+	}
+	return strconv.FormatInt(created.Variants[0].ID, 10), nil
+}
+
+// UpdateStock updates the stock quantity for a Shopify product variant.
+// externalOfferID should be the Shopify variant ID stored by PushOffer.
+func (p *Provider) UpdateStock(ctx context.Context, externalOfferID string, quantity int) error {
+	variantID, err := parseShopifyVariantID("update stock", externalOfferID)
+	if err != nil {
+		return err
+	}
+
+	variant, err := p.client.Products.GetVariant(ctx, variantID)
+	if err != nil {
+		return fmt.Errorf("shopify: get variant %s: %w", externalOfferID, err)
+	}
+	if variant.InventoryItemID == 0 {
+		return fmt.Errorf("shopify: variant %s has no inventory item ID", externalOfferID)
+	}
+
+	// Get first location's inventory level
+	levels, err := p.client.Inventory.GetLevels(ctx, variant.InventoryItemID)
+	if err != nil {
+		return fmt.Errorf("shopify: get inventory levels: %w", err)
+	}
+	if len(levels) == 0 {
+		return fmt.Errorf("shopify: no inventory levels found for item %d", variant.InventoryItemID)
+	}
+
+	locationID, err := selectInventoryLevelLocationID(levels)
+	if err != nil {
+		return fmt.Errorf("shopify: select inventory location for item %d: %w", variant.InventoryItemID, err)
+	}
+
+	return p.client.Inventory.SetLevel(ctx, variant.InventoryItemID, locationID, quantity)
+}
+
+// UpdatePrice updates the price for a Shopify product variant.
+// externalOfferID should be the variant ID.
+func (p *Provider) UpdatePrice(ctx context.Context, externalOfferID string, price float64) error {
+	variantID, err := parseShopifyVariantID("update price", externalOfferID)
+	if err != nil {
+		return err
+	}
+	return p.client.Products.UpdateVariant(ctx, variantID, map[string]any{
+		"price": fmt.Sprintf("%.2f", price),
+	})
+}
+
+func parseShopifyVariantID(operation, externalOfferID string) (int64, error) {
+	variantID, err := strconv.ParseInt(externalOfferID, 10, 64)
+	if err == nil {
+		return variantID, nil
+	}
+	if strings.HasPrefix(externalOfferID, "shopify-") {
+		return 0, fmt.Errorf("shopify: legacy synthetic external ID %q cannot be used for %s; recreate the Shopify listing to store a real variant ID", externalOfferID, operation)
+	}
+	return 0, fmt.Errorf("shopify: invalid variant ID %q: %w", externalOfferID, err)
+}
+
+func selectInventoryLevelLocationID(levels []shopifysdk.InventoryLevel) (int64, error) {
+	var locationID int64
+	// Shopify does not guarantee response order; use a stable fallback until
+	// OpenOMS stores an explicit preferred Shopify location per tenant.
+	for _, level := range levels {
+		if level.LocationID <= 0 {
+			continue
+		}
+		if locationID == 0 || level.LocationID < locationID {
+			locationID = level.LocationID
+		}
+	}
+	if locationID == 0 {
+		return 0, fmt.Errorf("inventory levels have no location ID")
+	}
+	return locationID, nil
+}
+
+// mapShopifyOrder converts a Shopify order to the normalized MarketplaceOrder.
+func (p *Provider) mapShopifyOrder(o *shopifysdk.Order) (integration.MarketplaceOrder, error) {
+	customerName := ""
+	customerEmail := o.Email
+	customerPhone := o.Phone
+
+	if o.ShippingAddress != nil {
+		customerName = fmt.Sprintf("%s %s", o.ShippingAddress.FirstName, o.ShippingAddress.LastName)
+	} else if o.Customer != nil {
+		customerName = fmt.Sprintf("%s %s", o.Customer.FirstName, o.Customer.LastName)
+		if customerEmail == "" {
+			customerEmail = o.Customer.Email
+		}
+		if customerPhone == "" {
+			customerPhone = o.Customer.Phone
+		}
+	}
+
+	mo := integration.MarketplaceOrder{
+		ExternalID:     strconv.FormatInt(o.ID, 10),
+		ExternalStatus: o.FinancialStatus,
+		CustomerName:   customerName,
+		CustomerEmail:  customerEmail,
+		CustomerPhone:  customerPhone,
+		Currency:       o.Currency,
+	}
+
+	// Shipping address
+	if o.ShippingAddress != nil {
+		mo.ShippingAddress = model.ShippingAddress{
+			Name:       fmt.Sprintf("%s %s", o.ShippingAddress.FirstName, o.ShippingAddress.LastName),
+			Street:     o.ShippingAddress.Address1,
+			City:       o.ShippingAddress.City,
+			PostalCode: o.ShippingAddress.Zip,
+			Country:    o.ShippingAddress.CountryCode,
+			Phone:      o.ShippingAddress.Phone,
+			Email:      customerEmail,
+		}
+	}
+
+	// Billing address
+	if o.BillingAddress != nil {
+		mo.BillingAddress = &model.ShippingAddress{
+			Name:       fmt.Sprintf("%s %s", o.BillingAddress.FirstName, o.BillingAddress.LastName),
+			Street:     o.BillingAddress.Address1,
+			City:       o.BillingAddress.City,
+			PostalCode: o.BillingAddress.Zip,
+			Country:    o.BillingAddress.CountryCode,
+			Phone:      o.BillingAddress.Phone,
+			Email:      customerEmail,
+		}
+	}
+
+	// Total amount
+	totalAmount, err := integration.ParseMoneyString("total_price", o.TotalPrice)
+	if err != nil {
+		return integration.MarketplaceOrder{}, err
+	}
+	mo.TotalAmount = totalAmount
+
+	// Payment status
+	switch o.FinancialStatus {
+	case "paid", "partially_paid":
+		mo.PaymentStatus = "paid"
+	case "refunded", "partially_refunded":
+		mo.PaymentStatus = "refunded"
+	default:
+		mo.PaymentStatus = "pending"
+	}
+
+	mo.PaymentMethod = o.Gateway
+
+	// Parse ordered_at
+	if t, err := time.Parse(time.RFC3339, o.CreatedAt); err == nil {
+		mo.OrderedAt = t
+	}
+
+	// Line items
+	for i, li := range o.LineItems {
+		unitPrice, err := integration.ParseMoneyString(fmt.Sprintf("line_items[%d].price", i), li.Price)
+		if err != nil {
+			return integration.MarketplaceOrder{}, err
+		}
+		totalDiscount, err := integration.ParseMoneyString(fmt.Sprintf("line_items[%d].total_discount", i), li.TotalDiscount)
+		if err != nil {
+			return integration.MarketplaceOrder{}, err
+		}
+		totalPrice := unitPrice*float64(li.Quantity) - totalDiscount
+
+		externalID := ""
+		if li.VariantID != nil {
+			externalID = strconv.FormatInt(*li.VariantID, 10)
+		} else if li.ProductID != nil {
+			externalID = strconv.FormatInt(*li.ProductID, 10)
+		}
+
+		mo.Items = append(mo.Items, integration.MarketplaceOrderItem{
+			ExternalID: externalID,
+			Name:       li.Name,
+			SKU:        li.SKU,
+			Quantity:   li.Quantity,
+			UnitPrice:  unitPrice,
+			TotalPrice: totalPrice,
+		})
+	}
+
+	// RawData
+	mo.RawData = map[string]any{
+		"shopify_order_id":   o.ID,
+		"order_name":         o.Name,
+		"fulfillment_status": o.FulfillmentStatus,
+		"gateway":            o.Gateway,
+	}
+	if o.Note != "" {
+		mo.RawData["customer_note"] = o.Note
+	}
+
+	return mo, nil
+}

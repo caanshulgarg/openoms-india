@@ -1,0 +1,202 @@
+{
+  "invoiceTypes": {
+    "correction": "Korekta",
+    "proforma": "Proforma",
+    "receipt": "Paragon",
+    "standard": "Standardowa",
+    "vat": "Faktura VAT"
+  },
+  "paymentMethods": {
+    "BLIK": "BLIK",
+    "PayU": "PayU",
+    "Przelewy24": "Przelewy24",
+    "card": "Karta",
+    "cod": "Pobranie",
+    "transfer": "Przelew"
+  },
+  "priorities": {
+    "high": "Wysoki",
+    "low": "Niski",
+    "normal": "Normalny",
+    "urgent": "Pilne"
+  },
+  "roles": {
+    "admin": "Administrator",
+    "brakRol": "Brak ról",
+    "cancelButton": "Anuluj",
+    "columns": {
+      "createdAt": "Utworzono",
+      "description": "Opis",
+      "name": "Nazwa",
+      "permissions": "Uprawnienia",
+      "type": "Typ"
+    },
+    "creating": "Tworzenie...",
+    "customRole": "Niestandardowa",
+    "czyNaPewnoChceszUsunacTeRoleUzytkownicyZTaRolaStra": "Czy na pewno chcesz usunąć tę rolę? Użytkownicy z tą rolą stracą przypisane uprawnienia.",
+    "descriptionLabel": "Opis",
+    "descriptionPlaceholder": "Opcjonalny opis roli",
+    "detail": {
+      "customRole": "Rola niestandardowa",
+      "descriptionLabel": "Opis",
+      "descriptionPlaceholder": "Opcjonalny opis roli",
+      "nameLabel": "Nazwa",
+      "notFound": "Nie znaleziono roli",
+      "permCreate": "Tworzenie",
+      "permDelete": "Usuwanie",
+      "permEdit": "Edycja",
+      "permExport": "Eksport",
+      "permManageAutomation": "Zarządzanie automatyzacją",
+      "permManageIntegrations": "Zarządzanie integracjami",
+      "permManageSettings": "Zarządzanie ustawieniami",
+      "permManageUsers": "Zarządzanie użytkownikami",
+      "permManageWarehouses": "Zarządzanie magazynami",
+      "permView": "Podgląd",
+      "permViewAudit": "Podgląd dziennika",
+      "permViewReports": "Podgląd raportów",
+      "permissions": "Uprawnienia",
+      "saveButton": "Zapisz",
+      "saving": "Zapisywanie...",
+      "systemRole": "Rola systemowa"
+    },
+    "member": "Członek",
+    "nameLabel": "Nazwa",
+    "namePlaceholder": "np. Magazynier",
+    "newRole": "Nowa rola",
+    "newRoleDialog": "Nowa rola",
+    "owner": "Właściciel",
+    "permissionsCount": "{count} uprawnień",
+    "roleCreated": "Rola została utworzona",
+    "roleDeleted": "Rola została usunięta",
+    "roleSaved": "Rola została zapisana",
+    "systemRole": "Systemowa",
+    "title": "Role",
+    "usunRole": "Usuń rolę",
+    "utworzNowaRoleIPrzypiszUprawnienia": "Utwórz nową rolę i przypisz uprawnienia",
+    "utworzPierwszaRoleAbyZarzadzacUprawnieniamiUzytkow": "Utwórz pierwszą rolę, aby zarządzać uprawnieniami użytkowników.",
+    "zarzadzajRolamiIUprawnieniamiUzytkownikow": "Zarządzaj rolami i uprawnieniami użytkowników"
+  },
+  "statuses": {
+    "dropship": {
+      "pending": "Oczekujące",
+      "sent": "Wysłane",
+      "confirmed": "Potwierdzony",
+      "shipped": "Wysłane",
+      "delivered": "Dostarczone",
+      "cancelled": "Anulowane"
+    },
+    "integration": {
+      "active": "Aktywna",
+      "error": "Błąd",
+      "inactive": "Nieaktywna"
+    },
+    "invoice": {
+      "cancelled": "Anulowana",
+      "draft": "Szkic",
+      "error": "Błąd",
+      "issued": "Wystawiona",
+      "paid": "Opłacona",
+      "partially_paid": "Częściowo opłacona",
+      "sent": "Wysłana"
+    },
+    "ksef": {
+      "accepted": "Zaakceptowana",
+      "not_sent": "Nie wysłano",
+      "pending": "Oczekuje",
+      "rejected": "Odrzucona"
+    },
+    "loyalty": {
+      "active": "Aktywny",
+      "paused": "Wstrzymany",
+      "ended": "Zakończony"
+    },
+    "order": {
+      "cancelled": "Anulowane",
+      "completed": "Zakończone",
+      "confirmed": "Potwierdzone",
+      "delivered": "Dostarczone",
+      "in_transit": "W transporcie",
+      "merged": "Scalone",
+      "new": "Nowe",
+      "on_hold": "Wstrzymane",
+      "out_for_delivery": "W doręczeniu",
+      "processing": "W realizacji",
+      "ready_to_ship": "Gotowe do wysyłki",
+      "refunded": "Zwrócone",
+      "shipped": "Wysłane",
+      "split": "Rozdzielone"
+    },
+    "payment": {
+      "failed": "Nieudane",
+      "paid": "Opłacone",
+      "partially_paid": "Częściowo",
+      "pending": "Oczekuje",
+      "refunded": "Zwrócone"
+    },
+    "pickPack": {
+      "picking": "Kompletowanie",
+      "packing": "Pakowanie",
+      "completed": "Zakończone",
+      "cancelled": "Anulowane"
+    },
+    "purchaseOrder": {
+      "cancelled": "Anulowane",
+      "confirmed": "Potwierdzone",
+      "draft": "Szkic",
+      "partially_received": "Częściowo odebrane",
+      "received": "Odebrane",
+      "sent": "Wysłane",
+      "shipped": "Wysłane (dostawca)"
+    },
+    "recurringOrder": {
+      "active": "Aktywna",
+      "paused": "Wstrzymana",
+      "cancelled": "Anulowana",
+      "completed": "Zakończona"
+    },
+    "repricingRule": {
+      "active": "Aktywny",
+      "paused": "Wstrzymany",
+      "archived": "Zarchiwizowany"
+    },
+    "return": {
+      "approved": "Zatwierdzone",
+      "cancelled": "Anulowane",
+      "received": "Odebrane",
+      "refunded": "Zwrócone",
+      "rejected": "Odrzucone",
+      "requested": "Zgłoszone"
+    },
+    "shipment": {
+      "created": "Utworzona",
+      "delivered": "Dostarczona",
+      "failed": "Nieudana",
+      "in_transit": "W transporcie",
+      "label_ready": "Etykieta gotowa",
+      "out_for_delivery": "W doręczeniu",
+      "picked_up": "Odebrana",
+      "returned": "Zwrócona"
+    },
+    "stocktake": {
+      "cancelled": "Anulowana",
+      "completed": "Zakończona",
+      "draft": "Szkic",
+      "in_progress": "W trakcie"
+    },
+    "supplier": {
+      "active": "Aktywny",
+      "error": "Błąd",
+      "inactive": "Nieaktywny"
+    },
+    "syncJob": {
+      "completed": "Zakończone",
+      "failed": "Nieudane",
+      "running": "W trakcie"
+    },
+    "warehouseDocument": {
+      "cancelled": "Anulowany",
+      "confirmed": "Zatwierdzony",
+      "draft": "Szkic"
+    }
+  }
+}

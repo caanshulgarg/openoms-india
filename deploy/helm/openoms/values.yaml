@@ -1,0 +1,324 @@
+namespace: openoms
+
+podSecurity:
+  enforce: restricted
+  audit: restricted
+  warn: restricted
+  version: latest
+
+sentry:
+  # Optional release identifier sent to Sentry by API, worker, and dashboard.
+  # Production deploys set this to the public repo commit SHA/image tag.
+  release: ""
+
+apiServer:
+  # Rendered as a kubelet-managed Kubernetes preStop.sleep on clusters >= 1.30.
+  # Older clusters omit the lifecycle hook because distroless images have no shell/sleep binary.
+  terminationDrainSeconds: 5
+  replicaCount: 1
+  image:
+    repository: ghcr.io/openoms-org/openoms-api
+    tag: ""  # defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+  port: 8080
+  service:
+    port: 8080  # K8s Service port (match containerPort for Cloudflare Tunnel)
+  env: production
+  allowInMemoryState: false  # set true only for explicit single-node deployments without Redis
+  registrationMode: invite  # "invite" (token required), "open" (dev only — rejected by the API outside development), "closed"
+  # Server-side feature readiness gate. "client-ready" exposes only certified
+  # features over the API; "full" disables gating (escape hatch). Keep in sync
+  # with dashboard.surfaceMode (OPENOMS_DASHBOARD_SURFACE).
+  apiSurfaceMode: "client-ready"
+  # Expose the unauthenticated OpenAPI spec (/v1/openapi.yaml) and Swagger UI (/v1/docs).
+  # Keep false in production; the API serves them in development regardless of this flag.
+  enableApiDocs: false
+  baseUrl: https://api.openoms.example.com
+  frontendUrl: https://app.openoms.example.com
+  # Comma-rendered to TRUSTED_PROXY_CIDRS. Empty means forwarded headers are ignored.
+  # Set only to CIDRs of immediate trusted proxies, such as ingress/cloudflared pod CIDRs.
+  trustedProxyCIDRs: []
+  uploadDir: /tmp/uploads
+  maxUploadSize: "10485760"
+  features:
+    allegro: true
+    inpost: true
+  s3:
+    enabled: true
+    bucket: openoms-uploads
+    region: eu-central-1
+    endpoint: ""
+    publicUrl: ""
+    forcePathStyle: false  # set true for Hetzner, MinIO, DigitalOcean Spaces
+  openai:
+    model: gpt-4o-mini
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 512Mi
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 5
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  startupProbe:
+    httpGet:
+      path: /health
+      port: http
+    failureThreshold: 30
+    periodSeconds: 2
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    fsGroup: 65534
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ['ALL']
+    seccompProfile:
+      type: RuntimeDefault
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+
+workerStrategy: separate  # "separate" or "embedded"
+
+worker:
+  replicaCount: 1
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    fsGroup: 65534
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ['ALL']
+    seccompProfile:
+      type: RuntimeDefault
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 384Mi
+
+dashboard:
+  # Client-side feature readiness gate. "client-ready" (default) shows only
+  # certified UI; "full" unlocks non-blocked nav/pages for this install only.
+  # Runtime env OPENOMS_DASHBOARD_SURFACE — not baked into the public image.
+  # Keep in sync with apiServer.apiSurfaceMode.
+  surfaceMode: "client-ready"
+  # Rendered as a kubelet-managed Kubernetes preStop.sleep on clusters >= 1.30 (see apiServer.terminationDrainSeconds).
+  terminationDrainSeconds: 5
+  replicaCount: 1
+  image:
+    repository: ghcr.io/openoms-org/openoms-dashboard
+    tag: ""
+    pullPolicy: IfNotPresent
+  port: 3000
+  service:
+    port: 3000  # K8s Service port (match containerPort for Cloudflare Tunnel)
+  resources:
+    requests:
+      cpu: 30m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  livenessProbe:
+    httpGet:
+      path: /
+      port: http
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 5
+  readinessProbe:
+    httpGet:
+      path: /
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  startupProbe:
+    httpGet:
+      path: /
+      port: http
+    failureThreshold: 30
+    periodSeconds: 2
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    runAsGroup: 1001
+    fsGroup: 1001
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true  # .next/cache and /tmp are writable emptyDir mounts
+    capabilities:
+      drop: ['ALL']
+    seccompProfile:
+      type: RuntimeDefault
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+
+migration:
+  image:
+    repository: ghcr.io/openoms-org/openoms-migrate
+    tag: ""
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    # Rate limiting — defense-in-depth (Cloudflare WAF handles edge rate limiting)
+    # These limits protect against internal cluster abuse; all external traffic
+    # arrives via cloudflared pods so per-IP limiting sees cloudflared's pod IP.
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "3"
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+  tls:
+    enabled: false  # set true + add cert-manager annotation for non-tunnel setups
+  api:
+    host: api.openoms.example.com
+    tlsSecret: openoms-api-tls
+  dashboard:
+    host: app.openoms.example.com
+    tlsSecret: openoms-dashboard-tls
+
+secrets:
+  createPlainSecret: false
+  name: openoms-secrets
+
+imagePullSecrets: []  # GHCR images are public; override if using private registry
+
+networkPolicy:
+  enabled: false  # set true in production for namespace-level isolation
+  ingressNamespace: ingress-nginx
+  cloudflaredNamespace: cloudflared
+  egress:
+    dns:
+      # Optional destination selectors or ipBlocks. Empty preserves broad
+      # self-hosted compatibility.
+      to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    https:
+      # Keep empty unless all required external API/S3/Sentry CIDRs are known.
+      # When `to` is empty the template still constrains 443 egress to public
+      # IPs by rendering an ipBlock 0.0.0.0/0 minus the `except` ranges below
+      # (blocks SSRF/exfil to cluster + cloud-metadata). Set `except: []` to
+      # restore fully unscoped HTTPS egress.
+      to: []
+      except:
+        - 10.0.0.0/8
+        - 100.64.0.0/10
+        - 127.0.0.0/8
+        - 169.254.0.0/16
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 224.0.0.0/4
+        - 240.0.0.0/4
+      ports:
+        - protocol: TCP
+          port: 443
+    database:
+      to: []
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6543
+    redis:
+      to: []
+      ports:
+        - protocol: TCP
+          port: 6379
+
+monitoring:
+  enabled: false
+  alloy:
+    replicaCount: 1
+    image:
+      repository: grafana/alloy
+      tag: v1.8.2
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        cpu: 200m
+        memory: 384Mi
+
+backup:
+  enabled: false
+  schedule: "0 3 * * *"  # daily at 3 AM
+  retentionDays: 30
+  minBackupBytes: 1000
+  # Pre-baked S3 client image used by the upload container (no runtime apk install).
+  # Pin to a digest for full immutability in production.
+  mcImage: minio/mc:RELEASE.2025-04-16T18-13-26Z
+  s3:
+    bucket: openoms-backups
+    prefix: "backups/"
+    endpoint: ""
+    region: ""
+    forcePathStyle: false
+
+redis:
+  url: "redis://localhost:6379"
+
+database:
+  host: postgres
+  # Secret key used to populate WORKER_DATABASE_URL. Defaults to the privileged
+  # migration DSN so worker/webhook cross-tenant queries do not use DATABASE_URL.
+  workerSecretKey: MIGRATION_DATABASE_URL
+
+blueGreen:
+  enabled: false
+  autoPromotionEnabled: true
+  autoPromotionSeconds: 60
+  scaleDownDelaySeconds: 300
+  prePromotionAnalysis: true
+  abortScaleDownDelaySeconds: 30
+
+autoscaling:
+  api:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+    scaleDownStabilizationSeconds: 300
+  dashboard:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+    scaleDownStabilizationSeconds: 300

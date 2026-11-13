@@ -1,0 +1,169 @@
+"use client";
+
+import { useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useReturns } from "@/hooks/use-returns";
+import { DataTable, type ColumnDef } from "@/components/shared/data-table";
+import { DataTablePagination } from "@/components/shared/data-table-pagination";
+import { StatusBadge } from "@/components/shared/status-badge";
+import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { RotateCcw } from "lucide-react";
+import { RETURN_STATUSES } from "@/lib/constants";
+import { formatDate, formatCurrency, shortId } from "@/lib/utils";
+import { EmptyState } from "@/components/shared/empty-state";
+import type { Return } from "@/types/api";
+import { useTranslations } from "next-intl";
+
+export default function ReturnsPage() {
+  const t = useTranslations("returns");
+  const router = useRouter();
+  const [statusFilter, setStatusFilter] = useState<string>("");
+  const [limit, setLimit] = useState(20);
+  const [offset, setOffset] = useState(0);
+
+  const { data, isLoading, isError, refetch } = useReturns({
+    status: statusFilter || undefined,
+    limit,
+    offset,
+  });
+
+  const columns: ColumnDef<Return>[] = [
+    {
+      header: t("columns.status"),
+      accessorKey: "status",
+      cell: (row) => <StatusBadge status={row.status} statusMap={RETURN_STATUSES} translationPrefix="return" />,
+    },
+    {
+      header: t("columns.order"),
+      accessorKey: "order_id",
+      cell: (row) => (
+        <Link
+          href={`/orders/${row.order_id}`}
+          className="font-mono text-xs text-primary hover:underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {shortId(row.order_id)}
+        </Link>
+      ),
+    },
+    {
+      header: t("columns.reason"),
+      accessorKey: "reason",
+      cell: (row) => (
+        <span className="text-sm">
+          {row.reason.length > 50 ? `${row.reason.slice(0, 50)}...` : row.reason}
+        </span>
+      ),
+    },
+    {
+      header: t("columns.refundAmount"),
+      accessorKey: "refund_amount",
+      cell: (row) => formatCurrency(row.refund_amount),
+    },
+    {
+      header: t("columns.date"),
+      accessorKey: "created_at",
+      cell: (row) => formatDate(row.created_at),
+    },
+  ];
+
+  const handleStatusChange = (value: string) => {
+    setStatusFilter(value === "all" ? "" : value);
+    setOffset(0);
+  };
+
+  const handlePageSizeChange = (newLimit: number) => {
+    setLimit(newLimit);
+    setOffset(0);
+  };
+
+  const handlePageChange = (newOffset: number) => {
+    setOffset(newOffset);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">{t("title")}</h1>
+          <p className="text-muted-foreground mt-1">
+            {t("subtitle")}
+          </p>
+        </div>
+        <Button asChild>
+          <Link href="/returns/new">{t("newReturn")}</Link>
+        </Button>
+      </div>
+
+      <div className="flex items-center gap-4">
+        <div className="w-[200px]">
+          <Select value={statusFilter || "all"} onValueChange={handleStatusChange}>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder={t("columns.status")} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t("statuses.all")}</SelectItem>
+              <SelectItem value="requested">{t("return.requested")}</SelectItem>
+              <SelectItem value="approved">{t("statuses.approved")}</SelectItem>
+              <SelectItem value="received">{t("statuses.received")}</SelectItem>
+              <SelectItem value="refunded">{t("order.refunded")}</SelectItem>
+              <SelectItem value="rejected">{t("statuses.rejected")}</SelectItem>
+              <SelectItem value="cancelled">{t("statuses.cancelled")}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {isError && (
+        <div className="rounded-md border border-destructive bg-destructive/10 p-4">
+          <p className="text-sm text-destructive">
+            {t("loadError")}
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-2"
+            onClick={() => refetch()}
+          >
+            {t("retry")}
+          </Button>
+        </div>
+      )}
+
+      <div className="rounded-md border">
+        <DataTable<Return>
+          columns={columns}
+          data={data?.items || []}
+          isLoading={isLoading}
+          emptyState={
+            <EmptyState
+              icon={RotateCcw}
+              title={t("empty.title")}
+              description={t("empty.description")}
+              action={{ label: t("newReturn"), href: "/returns/new" }}
+            />
+          }
+          onRowClick={(row) => router.push(`/returns/${row.id}`)}
+        />
+      </div>
+
+      {data && (
+        <DataTablePagination
+          total={data.total}
+          limit={limit}
+          offset={offset}
+          onPageChange={handlePageChange}
+          onPageSizeChange={handlePageSizeChange}
+        />
+      )}
+    </div>
+  );
+}

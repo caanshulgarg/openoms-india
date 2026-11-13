@@ -1,0 +1,93 @@
+{
+  "invoices": {
+    "allKsef": "All Ksef",
+    "allProviders": "All Providers",
+    "allStatuses": "All Statuses",
+    "anulujFakture": "Cancel invoice",
+    "columns": {
+      "grossAmount": "Gross Amount",
+      "issueDate": "Issue Date",
+      "number": "Number",
+      "order": "Order",
+      "provider": "Provider",
+      "type": "Type"
+    },
+    "czyNaPewnoChceszAnulowacTeFaktureTaOperacjaJestNie": "Are you sure you want to cancel this invoice? This action is irreversible.",
+    "detail": {
+      "backToList": "Back To List",
+      "externalId": "External Id"
+    },
+    "fakturaWyslanaDoKsef": "Invoice sent to KSeF",
+    "fakturaZostalaAnulowana": "Invoice has been cancelled",
+    "filters": {
+      "allKsef": "All (KSeF)",
+      "allProviders": "All providers",
+      "allStatuses": "All statuses"
+    },
+    "invoice": {
+      "error": "Error"
+    },
+    "invoiceCancelled": "Invoice has been cancelled",
+    "invoiceSentToKsef": "Invoice sent to KSeF",
+    "ksefBulkErrors": "Ksef Bulk Errors",
+    "ksefBulkSent": "Ksef Bulk Sent",
+    "ksefErrors": "Errors: {errors}",
+    "ksefSent": "Sent {sent} of {total} invoices to KSeF",
+    "loadError": "Load Error",
+    "nieZnalezionoFakturDoWyswietlenia": "No invoices found to display.",
+    "noInvoices": "No Invoices",
+    "paymentDueDate": "Payment due date",
+    "provider": "Provider",
+    "retry": "Retry",
+    "sendDate": "Date sent",
+    "sendToKsef": "Send to KSeF ({count})",
+    "sprawdzStatus": "Check status",
+    "subtitle": "List of issued invoices",
+    "title": "Invoices",
+    "wyslijDoKsef": "Send to KSeF",
+    "ksefStatusUpdated": "KSeF status updated",
+    "invoicingSettingsSaved": "Invoicing settings saved",
+    "invoicingSettingsSaveFailed": "Failed to save settings",
+    "invoicingProviderDeleted": "Invoice provider deleted"
+  },
+  "ksef": {
+    "authData": "Authentication data",
+    "authDescription": "Company NIP and authorization token from KSeF portal",
+    "authToken": "Authorization token",
+    "authTokenPlaceholder": "Token from KSeF portal",
+    "autoSendNewInvoicesToKsef": "Automatically send newly created invoices to KSeF",
+    "autoSendRetry": "Failed sends will be retried automatically (max 3 attempts).",
+    "automaticSending": "Automatic sending",
+    "autosendDisabled": "Auto-send disabled",
+    "autosendEnabled": "Auto-send enabled",
+    "checkKsefConnectionWorks": "Check if the KSeF connection is working properly",
+    "city": "City",
+    "companyData": "Company data (seller)",
+    "companyName": "Company name",
+    "companyNamePlaceholder": "Company Name Ltd.",
+    "country": "Country",
+    "daneFirmyUzywaneWFakturachStrukturalnychKsef": "Company data used in KSeF structured invoices",
+    "enableKsefForAutoSending": "Enable KSeF integration to use automatic",
+    "enableOrDisableSendingInvoicesToKsef": "Enable or disable sending invoices to KSeF",
+    "environmentDescription": "Select KSeF environment (test for testing, production for real invoices)",
+    "environments": {
+      "production": "Production (ksef.mf.gov.pl)",
+      "test": "Test (ksef-test.mf.gov.pl)"
+    },
+    "generateTokenHint": "Generate a token in the {portal} portal",
+    "integrationStatus": "Integration status",
+    "ksefConnectionTest": "Test connection",
+    "ksefConnectionTestError": "Failed to test connection",
+    "ksefDisabled": "KSeF disabled",
+    "ksefEnabled": "KSeF enabled",
+    "ksefSettingsSaveError": "Failed to save settings",
+    "nipHint": "10-digit tax identification number",
+    "postalCode": "Postal code",
+    "settingsSaved": "KSeF settings saved",
+    "srodowisko": "Environment",
+    "street": "Street",
+    "subtitle": "Configure integration with the National e-Invoice System",
+    "title": "KSeF - National e-Invoice System",
+    "wybierzSrodowisko": "Select environment"
+  }
+}

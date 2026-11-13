@@ -1,0 +1,771 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  GO_VERSION: "1.25.9"
+  NODE_VERSION: "22"
+
+jobs:
+  auto-format:
+    name: Auto-format
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Check Go formatting
+        run: |
+          UNFORMATTED=$(gofmt -l apps/api-server packages)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "::error::Go files need formatting. Run: gofmt -w -s apps/ packages/"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: apps/dashboard/package-lock.json
+
+      - name: Check frontend lint
+        working-directory: apps/dashboard
+        run: |
+          npm ci
+          npx eslint src/
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Lint api-server
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.9.0
+          working-directory: apps/api-server
+          args: --timeout=5m
+          only-new-issues: true
+
+      - name: Lint allegro-go-sdk
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.9.0
+          working-directory: packages/allegro-go-sdk
+          args: --timeout=5m
+          only-new-issues: true
+
+      - name: Lint inpost-go-sdk
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.9.0
+          working-directory: packages/inpost-go-sdk
+          args: --timeout=5m
+          only-new-issues: true
+
+      - name: Lint order-engine
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.9.0
+          working-directory: packages/order-engine
+          args: --timeout=5m
+          only-new-issues: true
+
+      - name: Lint erli-go-sdk
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.9.0
+          working-directory: packages/erli-go-sdk
+          args: --timeout=5m
+          only-new-issues: true
+
+      - name: Lint ebay-go-sdk
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.9.0
+          working-directory: packages/ebay-go-sdk
+          args: --timeout=5m
+          only-new-issues: true
+
+  lint-strict:
+    name: Lint (strict)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Lint api-server
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.9.0
+          args: --timeout=5m
+          working-directory: apps/api-server
+      - name: Lint allegro-go-sdk
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.9.0
+          args: --timeout=5m
+          working-directory: packages/allegro-go-sdk
+      - name: Lint inpost-go-sdk
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.9.0
+          args: --timeout=5m
+          working-directory: packages/inpost-go-sdk
+      - name: Lint order-engine
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.9.0
+          args: --timeout=5m
+          working-directory: packages/order-engine
+      - name: Lint erli-go-sdk
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.9.0
+          args: --timeout=5m
+          working-directory: packages/erli-go-sdk
+      - name: Lint ebay-go-sdk
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.9.0
+          args: --timeout=5m
+          working-directory: packages/ebay-go-sdk
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Scan api-server
+        working-directory: apps/api-server
+        run: |
+          set +e
+          govulncheck ./...
+          rc=$?
+          if [ $rc -eq 0 ] || [ $rc -eq 3 ]; then
+            [ $rc -eq 3 ] && echo "::warning::govulncheck: vulnerabilities in deps but not called by code"
+            exit 0
+          fi
+          exit 1
+
+      - name: Scan allegro-go-sdk
+        working-directory: packages/allegro-go-sdk
+        run: |
+          set +e
+          govulncheck ./...
+          rc=$?
+          if [ $rc -eq 0 ] || [ $rc -eq 3 ]; then
+            [ $rc -eq 3 ] && echo "::warning::govulncheck: vulnerabilities in deps but not called by code"
+            exit 0
+          fi
+          exit 1
+
+      - name: Scan inpost-go-sdk
+        working-directory: packages/inpost-go-sdk
+        run: |
+          set +e
+          govulncheck ./...
+          rc=$?
+          if [ $rc -eq 0 ] || [ $rc -eq 3 ]; then
+            [ $rc -eq 3 ] && echo "::warning::govulncheck: vulnerabilities in deps but not called by code"
+            exit 0
+          fi
+          exit 1
+
+      - name: Scan order-engine
+        working-directory: packages/order-engine
+        run: |
+          set +e
+          govulncheck ./...
+          rc=$?
+          if [ $rc -eq 0 ] || [ $rc -eq 3 ]; then
+            [ $rc -eq 3 ] && echo "::warning::govulncheck: vulnerabilities in deps but not called by code"
+            exit 0
+          fi
+          exit 1
+
+      - name: Scan erli-go-sdk
+        working-directory: packages/erli-go-sdk
+        run: |
+          set +e
+          govulncheck ./...
+          rc=$?
+          if [ $rc -eq 0 ] || [ $rc -eq 3 ]; then
+            [ $rc -eq 3 ] && echo "::warning::govulncheck: vulnerabilities in deps but not called by code"
+            exit 0
+          fi
+          exit 1
+
+      - name: Scan ebay-go-sdk
+        working-directory: packages/ebay-go-sdk
+        run: |
+          set +e
+          govulncheck ./...
+          rc=$?
+          if [ $rc -eq 0 ] || [ $rc -eq 3 ]; then
+            [ $rc -eq 3 ] && echo "::warning::govulncheck: vulnerabilities in deps but not called by code"
+            exit 0
+          fi
+          exit 1
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: apps/dashboard/package-lock.json
+
+      - name: Audit frontend dependencies
+        working-directory: apps/dashboard
+        # Audit production dependencies (what actually ships to users) at the high gate.
+        # Dev-only tooling CVEs (vite/ws/vitest/shadcn->hono/undici) are not bundled and are
+        # tracked via Renovate, so they must not block PRs; production is still gated at high.
+        run: npm ci && npm audit --omit=dev --audit-level=high
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: openoms
+          POSTGRES_PASSWORD: openoms_dev
+          POSTGRES_DB: openoms_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U openoms"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      DATABASE_URL: postgres://openoms:openoms_dev@localhost:5432/openoms_dev?sslmode=disable
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-test-jwt-secret-not-for-production
+      ENCRYPTION_KEY: a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run all migrations
+        run: |
+          # Apply all migration files in order (not just 000001)
+          for f in $(ls apps/api-server/migrations/*.up.sql | sort); do
+            echo "Applying: $(basename $f)"
+            PGPASSWORD=openoms_dev psql -h localhost -U openoms -d openoms_dev -f "$f"
+          done
+
+      - name: Check SECURITY DEFINER grants
+        run: PGPASSWORD=openoms_dev psql -h localhost -U openoms -d openoms_dev -f scripts/check-security-definer-public-execute.sql
+
+      - name: Check RLS policies
+        run: PGPASSWORD=openoms_dev psql -h localhost -U openoms -d openoms_dev -f scripts/check-rls-policies.sql
+
+      - name: Check migration timeouts
+        run: scripts/check-migration-timeouts.sh
+
+      - name: Test api-server
+        working-directory: apps/api-server
+        run: go test -race -cover ./...
+
+      - name: Test erli-go-sdk
+        working-directory: packages/erli-go-sdk
+        run: go test ./...
+
+      - name: Test allegro-go-sdk
+        working-directory: packages/allegro-go-sdk
+        run: go test ./...
+
+      - name: Test inpost-go-sdk
+        working-directory: packages/inpost-go-sdk
+        run: go test ./...
+
+      - name: Test order-engine
+        working-directory: packages/order-engine
+        run: go test ./...
+
+      - name: Test dhl-go-sdk
+        working-directory: packages/dhl-go-sdk
+        run: go test ./...
+
+      - name: Test ksef-go-sdk
+        working-directory: packages/ksef-go-sdk
+        run: go test ./...
+
+      - name: Test amazon-sp-sdk
+        working-directory: packages/amazon-sp-sdk
+        run: go test ./...
+
+      - name: Test dpd-go-sdk
+        working-directory: packages/dpd-go-sdk
+        run: go test ./...
+
+      - name: Test gls-go-sdk
+        working-directory: packages/gls-go-sdk
+        run: go test ./...
+
+      - name: Test btp-go-sdk
+        working-directory: packages/btp-go-sdk
+        run: go test ./...
+
+      - name: Test shiprocket-go-sdk
+        working-directory: packages/shiprocket-go-sdk
+        run: go test ./...
+
+      - name: Test delhivery-go-sdk
+        working-directory: packages/delhivery-go-sdk
+        run: go test ./...
+
+      - name: Test ebay-go-sdk
+        working-directory: packages/ebay-go-sdk
+        run: go test ./...
+
+  security-tests:
+    name: Security Tests
+    # Deliberately no `needs:`. This job brings up its own Redis and shares
+    # nothing with `test`, which brings up its own Postgres — the dependency
+    # only sequenced them, and left this job closing the whole run.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Run security tests
+        working-directory: apps/api-server
+        env:
+          REDIS_URL: redis://localhost:6379
+        run: go test -race -run 'TestSecurity_' ./internal/middleware/ ./internal/handler/
+
+  vet:
+    name: Vet
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Vet api-server
+        working-directory: apps/api-server
+        run: go vet ./...
+
+      - name: Vet allegro-go-sdk
+        working-directory: packages/allegro-go-sdk
+        run: go vet ./...
+
+      - name: Vet inpost-go-sdk
+        working-directory: packages/inpost-go-sdk
+        run: go vet ./...
+
+      - name: Vet order-engine
+        working-directory: packages/order-engine
+        run: go vet ./...
+
+      - name: Vet erli-go-sdk
+        working-directory: packages/erli-go-sdk
+        run: go vet ./...
+
+      - name: Vet ebay-go-sdk
+        working-directory: packages/ebay-go-sdk
+        run: go vet ./...
+
+  migration-safety:
+    name: Migration Safety
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'migration:destructive')
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Check migration backward-compatibility
+        run: |
+          DANGEROUS_OPS="DROP[[:space:]]+COLUMN|DROP[[:space:]]+TABLE|DROP[[:space:]]+SCHEMA|DROP[[:space:]]+FUNCTION|DROP[[:space:]]+INDEX|RENAME[[:space:]]+COLUMN|ALTER[[:space:]][^;]*TYPE|ALTER[[:space:]][^;]*SET[[:space:]]+NOT[[:space:]]+NULL|TRUNCATE"
+          ADDED_MIGRATIONS=$(git diff --diff-filter=A --name-only origin/main... -- 'apps/api-server/migrations/*.up.sql' 2>/dev/null || true)
+          MODIFIED_MIGRATIONS=$(git diff --diff-filter=M --name-only origin/main... -- 'apps/api-server/migrations/*.up.sql' 2>/dev/null || true)
+          if [ -z "$ADDED_MIGRATIONS$MODIFIED_MIGRATIONS" ]; then
+            echo "No new or modified up migrations found — skipping"
+            exit 0
+          fi
+          BLOCKED=0
+          for f in $ADDED_MIGRATIONS; do
+            if [ ! -f "$f" ]; then continue; fi
+            SQL_TEXT=$(tr '\n' ' ' < "$f" | tr '\t' ' ')
+            DANGEROUS_MATCHES=$(printf "%s\n" "$SQL_TEXT" | grep -inEi "$DANGEROUS_OPS" || true)
+            ADD_NOT_NULL_MATCHES=$(printf "%s\n" "$SQL_TEXT" | grep -Eio 'ADD[^;]*NOT[[:space:]]+NULL[^;]*' | grep -viE 'DEFAULT' || true)
+            if [ -n "$DANGEROUS_MATCHES" ] || [ -n "$ADD_NOT_NULL_MATCHES" ]; then
+              echo "BLOCKED: $f contains destructive operation"
+              printf "%s\n%s\n" "$DANGEROUS_MATCHES" "$ADD_NOT_NULL_MATCHES" | sed '/^$/d'
+              BLOCKED=1
+            fi
+          done
+          # Existing migrations can contain historical destructive operations that were already reviewed.
+          # For modified files, block newly added destructive lines instead of re-scanning the full file.
+          for f in $MODIFIED_MIGRATIONS; do
+            if [ ! -f "$f" ]; then continue; fi
+            ADDED_SQL=$(git diff --unified=0 origin/main... -- "$f" | sed -n 's/^+\([^+].*\)$/\1/p' | tr '\n' ' ' | tr '\t' ' ' || true)
+            DANGEROUS_MATCHES=$(printf "%s\n" "$ADDED_SQL" | grep -inEi "$DANGEROUS_OPS" || true)
+            ADD_NOT_NULL_MATCHES=$(printf "%s\n" "$ADDED_SQL" | grep -Eio 'ADD[^;]*NOT[[:space:]]+NULL[^;]*' | grep -viE 'DEFAULT' || true)
+            if [ -n "$DANGEROUS_MATCHES" ] || [ -n "$ADD_NOT_NULL_MATCHES" ]; then
+              echo "BLOCKED: $f adds destructive operation"
+              printf "%s\n%s\n" "$DANGEROUS_MATCHES" "$ADD_NOT_NULL_MATCHES" | sed '/^$/d'
+              BLOCKED=1
+            fi
+          done
+          if [ "$BLOCKED" = "1" ]; then
+            echo ""
+            echo "Blue-green deployment requires backward-compatible migrations."
+            echo "Split destructive changes into 2 deploys."
+            echo "Override: add 'migration:destructive' label to the PR."
+            exit 1
+          fi
+          echo "All migrations are backward-compatible"
+
+      - name: Freeze applied migrations
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'migration:allow-edit') }}
+        run: |
+          # Migrations are immutable once merged: production has already run the old
+          # file content, so editing (or deleting/renaming) a merged migration makes
+          # fresh installs diverge from production. Forward-only — add a NEW migration
+          # instead. (OPE-474)
+          CHANGED=$(git diff --diff-filter=MDR --name-only origin/main... -- 'apps/api-server/migrations/*.sql' 2>/dev/null || true)
+          if [ -n "$CHANGED" ]; then
+            echo "BLOCKED: these already-merged migration files were modified, deleted, or renamed:"
+            printf '  %s\n' $CHANGED
+            echo ""
+            echo "Migrations are frozen once merged. Add a NEW migration to change schema;"
+            echo "never edit migration history (prod ran the old content, fresh installs run the new)."
+            echo "Override (rare — e.g. fixing a migration that was never deployed): add the"
+            echo "'migration:allow-edit' label to the PR."
+            exit 1
+          fi
+          echo "No already-merged migrations were modified"
+
+      - name: Enforce CONCURRENTLY for new indexes
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'migration:index-lock-ok') }}
+        run: |
+          # CREATE INDEX without CONCURRENTLY takes an ACCESS EXCLUSIVE lock and blocks
+          # all writes to the table while the index builds (OPE-474; e.g. 000021 locked
+          # orders). Require CONCURRENTLY on new indexes. Brand-new/empty tables created
+          # in the same migration are exempt via a trailing '-- migrate:index-lock-ok'
+          # comment on the CREATE INDEX line (or the 'migration:index-lock-ok' PR label).
+          ADDED=$(git diff --diff-filter=A --name-only origin/main... -- 'apps/api-server/migrations/*.up.sql' 2>/dev/null || true)
+          BLOCKED=0
+          for f in $ADDED; do
+            [ -f "$f" ] || continue
+            HITS=$(grep -inE 'create[[:space:]]+(unique[[:space:]]+)?index' "$f" \
+                   | grep -viE 'concurrently' \
+                   | grep -viE 'migrate:index-lock-ok' || true)
+            if [ -n "$HITS" ]; then
+              echo "BLOCKED: $f creates an index without CONCURRENTLY:"
+              printf '%s\n' "$HITS"
+              BLOCKED=1
+            fi
+          done
+          if [ "$BLOCKED" = "1" ]; then
+            echo ""
+            echo "Use CREATE INDEX CONCURRENTLY so the build does not lock the table."
+            echo "If the table is brand-new/empty in this same migration (the lock is harmless),"
+            echo "append '-- migrate:index-lock-ok' to the CREATE INDEX line, or add the"
+            echo "'migration:index-lock-ok' label to the PR."
+            exit 1
+          fi
+          echo "All new indexes use CONCURRENTLY (or are marked safe)"
+
+  helm-chart:
+    name: Helm Chart
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
+        id: filter
+        with:
+          filters: |
+            chart:
+              - 'deploy/helm/openoms/**'
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        if: steps.filter.outputs.chart == 'true'
+
+      - name: Lint chart
+        if: steps.filter.outputs.chart == 'true'
+        run: helm lint deploy/helm/openoms
+
+      - name: Render chart
+        if: steps.filter.outputs.chart == 'true'
+        run: helm template openoms deploy/helm/openoms > /dev/null
+
+      - name: Check distroless-safe preStop hooks
+        if: steps.filter.outputs.chart == 'true'
+        run: |
+          set -euo pipefail
+          rendered="$(mktemp)"
+          # Render against a >= 1.30 cluster so the kubelet-managed preStop.sleep is emitted (OPE-268).
+          helm template openoms deploy/helm/openoms --kube-version 1.34.0 > "$rendered"
+          grep -q 'preStop:' "$rendered" || { echo "Expected preStop hooks in the Kubernetes 1.34 render" >&2; exit 1; }
+          grep -q 'sleep:' "$rendered" || { echo "Expected kubelet-managed preStop.sleep hooks in the Kubernetes 1.34 render" >&2; exit 1; }
+          # Distroless images (API: static-debian12, dashboard: distroless nodejs) have no shell and
+          # no reliable exec PATH during termination, so lifecycle hooks must not shell out.
+          if grep -Eq '"sh", "-c", "sleep 5"|setTimeout\(' "$rendered"; then
+            echo "Distroless preStop hooks must not depend on shell/node exec sleeps" >&2
+            exit 1
+          fi
+          echo "preStop.sleep lifecycle hooks present and shell-free."
+
+      - name: Check Helm Pod Security Standards
+        if: steps.filter.outputs.chart == 'true'
+        run: python3 scripts/check-helm-pss.py
+
+      - name: No chart changes
+        if: steps.filter.outputs.chart != 'true'
+        run: echo "No Helm chart changes, skipping validation"
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: apps/dashboard/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/dashboard
+        run: npm ci
+
+      - name: Check readiness registry is in sync
+        working-directory: apps/dashboard
+        run: |
+          npm run sync:readiness
+          git diff --exit-code -- src/lib/readiness.generated.json \
+            || (echo "::error::readiness.generated.json is stale; run 'npm run sync:readiness' in apps/dashboard and commit the result" && exit 1)
+
+      - name: Lint
+        working-directory: apps/dashboard
+        run: npx eslint src/
+
+      - name: Unit tests
+        working-directory: apps/dashboard
+        run: npx vitest run
+
+      - name: Build
+        working-directory: apps/dashboard
+        run: npx next build
+
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Deliberately no `needs:`. Whether the images build and pass the hardening
+    # checks does not depend on lint or test results, and waiting for them left
+    # this job idle for ~4 minutes while it was the one closing the whole run.
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      # Must come before the first build: the docker-container driver it sets up
+      # is what makes the registry-independent build cache below possible.
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      # build-push-action rather than a plain `docker buildx build`: the GitHub
+      # Actions cache credentials are only handed to JS actions, so cache flags
+      # passed from a shell step are accepted and then silently ignored — the
+      # build looks cached-enabled while never importing or exporting anything.
+      # pull: a warm cache once served a stale base image and hid an
+      # already-patched CVE until the release pipeline caught it.
+      # Scopes match release.yml, so both workflows share the same layers.
+      - name: Build API server image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: apps/api-server/Dockerfile
+          tags: openoms-api:ci
+          pull: true
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Check Dashboard build secrets
+        run: ./scripts/check-dashboard-build-secrets.sh
+
+      - name: Test Dashboard Sentry guards
+        run: ./scripts/test-dashboard-sentry-guards.sh
+
+      # load: materialises the image locally so the hardening check can inspect it.
+      - name: Build Dashboard image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: apps/dashboard
+          file: apps/dashboard/Dockerfile
+          tags: openoms-dashboard:ci
+          load: true
+          pull: true
+          cache-from: type=gha,scope=dashboard
+          cache-to: type=gha,mode=max,scope=dashboard
+
+      - name: Check Dashboard image hardening
+        run: ./scripts/check-dashboard-image.sh openoms-dashboard:ci
+
+  github-actions-pinning:
+    name: GitHub Actions Pinning
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Validate GitHub Actions pinning
+        run: scripts/validate-github-actions-pinning.sh
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: openoms
+          POSTGRES_PASSWORD: openoms_dev
+          POSTGRES_DB: openoms_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U openoms"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      DATABASE_URL: postgres://openoms:openoms_dev@localhost:5432/openoms_dev?sslmode=disable
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # The DB-bound integration harness (tests/integration, build tag `integration`)
+      # applies migrations via the golang-migrate CLI. Install it (postgres driver)
+      # and expose it under the `golang-migrate` name the harness/Taskfile use.
+      - name: Install golang-migrate
+        run: |
+          go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1
+          ln -sf "$(go env GOPATH)/bin/migrate" "$(go env GOPATH)/bin/golang-migrate"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Integration tests (DB-bound RLS / tenant isolation)
+        working-directory: apps/api-server
+        run: go test -tags integration -count=1 ./tests/integration/...
+
+  auto-merge-gate:
+    name: Auto-Merge Gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    needs:
+      - lint-strict
+      - vet
+      - test
+      - security-tests
+      - security
+      - frontend
+      - helm-chart
+      - docker
+      - github-actions-pinning
+    # Auto-merge only digest-only Renovate PRs. Version bumps remain manual:
+    # release.yml and Trivy may uncover transitive CVEs that require review.
+    # Requires lint-strict (no pre-existing issues allowed for auto-merge).
+    # e2e and migration-safety excluded from needs — e2e is informational,
+    # migration-safety may be skipped (no migrations in dependency PRs).
+    if: >-
+      github.event_name == 'pull_request' &&
+      startsWith(github.event.pull_request.head.ref, 'renovate/') &&
+      contains(github.event.pull_request.labels.*.name, 'dependencies:digest')
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Auto-merge
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge ${{ github.event.pull_request.number }} \
+            --auto \
+            --squash \
+            --delete-branch

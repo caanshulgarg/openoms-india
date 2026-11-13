@@ -1,0 +1,202 @@
+{
+  "invoiceTypes": {
+    "correction": "Correction",
+    "proforma": "Proforma",
+    "receipt": "Receipt",
+    "standard": "Standard",
+    "vat": "VAT Invoice"
+  },
+  "paymentMethods": {
+    "BLIK": "BLIK",
+    "PayU": "PayU",
+    "Przelewy24": "Przelewy24",
+    "card": "Card",
+    "cod": "Cash on delivery",
+    "transfer": "Bank transfer"
+  },
+  "priorities": {
+    "high": "High",
+    "low": "Low",
+    "normal": "Normal",
+    "urgent": "Urgent"
+  },
+  "roles": {
+    "admin": "Admin",
+    "brakRol": "No roles",
+    "cancelButton": "Cancel",
+    "columns": {
+      "createdAt": "Created",
+      "description": "Description",
+      "name": "Name",
+      "permissions": "Permissions",
+      "type": "Type"
+    },
+    "creating": "Creating...",
+    "customRole": "Custom",
+    "czyNaPewnoChceszUsunacTeRoleUzytkownicyZTaRolaStra": "Are you sure you want to delete this role? Users with this role will lose their assigned permissions.",
+    "descriptionLabel": "Description",
+    "descriptionPlaceholder": "Optional role description",
+    "detail": {
+      "customRole": "Custom role",
+      "descriptionLabel": "Description",
+      "descriptionPlaceholder": "Optional role description",
+      "nameLabel": "Name",
+      "notFound": "Role not found",
+      "permCreate": "Create",
+      "permDelete": "Delete",
+      "permEdit": "Edit",
+      "permExport": "Export",
+      "permManageAutomation": "Manage automation",
+      "permManageIntegrations": "Manage integrations",
+      "permManageSettings": "Manage settings",
+      "permManageUsers": "Manage users",
+      "permManageWarehouses": "Manage warehouses",
+      "permView": "View",
+      "permViewAudit": "View audit log",
+      "permViewReports": "View reports",
+      "permissions": "Permissions",
+      "saveButton": "Save",
+      "saving": "Saving...",
+      "systemRole": "System role"
+    },
+    "member": "Member",
+    "nameLabel": "Name",
+    "namePlaceholder": "e.g. Warehouse worker",
+    "newRole": "New role",
+    "newRoleDialog": "New role",
+    "owner": "Owner",
+    "permissionsCount": "{count} permissions",
+    "roleCreated": "Role has been created",
+    "roleDeleted": "Role has been deleted",
+    "roleSaved": "Role has been saved",
+    "systemRole": "System",
+    "title": "Roles",
+    "usunRole": "Delete role",
+    "utworzNowaRoleIPrzypiszUprawnienia": "Create a new role and assign permissions",
+    "utworzPierwszaRoleAbyZarzadzacUprawnieniamiUzytkow": "Create the first role to manage user permissions.",
+    "zarzadzajRolamiIUprawnieniamiUzytkownikow": "Manage roles and user permissions"
+  },
+  "statuses": {
+    "dropship": {
+      "pending": "Pending",
+      "sent": "Sent",
+      "confirmed": "Confirmed",
+      "shipped": "Shipped",
+      "delivered": "Delivered",
+      "cancelled": "Cancelled"
+    },
+    "integration": {
+      "active": "Active",
+      "error": "Error",
+      "inactive": "Inactive"
+    },
+    "invoice": {
+      "cancelled": "Cancelled",
+      "draft": "Draft",
+      "error": "Error",
+      "issued": "Issued",
+      "paid": "Paid",
+      "partially_paid": "Partially paid",
+      "sent": "Sent"
+    },
+    "ksef": {
+      "accepted": "Accepted",
+      "not_sent": "Not sent",
+      "pending": "Pending",
+      "rejected": "Rejected"
+    },
+    "loyalty": {
+      "active": "Active",
+      "paused": "Paused",
+      "ended": "Completed"
+    },
+    "order": {
+      "cancelled": "Cancelled",
+      "completed": "Completed",
+      "confirmed": "Confirmed",
+      "delivered": "Delivered",
+      "in_transit": "In transit",
+      "merged": "Merged",
+      "new": "New",
+      "on_hold": "On hold",
+      "out_for_delivery": "Out for delivery",
+      "processing": "Processing",
+      "ready_to_ship": "Ready to ship",
+      "refunded": "Refunded",
+      "shipped": "Shipped",
+      "split": "Split"
+    },
+    "payment": {
+      "failed": "Failed",
+      "paid": "Paid",
+      "partially_paid": "Partial",
+      "pending": "Pending",
+      "refunded": "Refunded"
+    },
+    "pickPack": {
+      "picking": "Picking",
+      "packing": "Packing",
+      "completed": "Completed",
+      "cancelled": "Cancelled"
+    },
+    "purchaseOrder": {
+      "cancelled": "Cancelled",
+      "confirmed": "Confirmed",
+      "draft": "Draft",
+      "partially_received": "Partially received",
+      "received": "Received",
+      "sent": "Sent",
+      "shipped": "Shipped (supplier)"
+    },
+    "recurringOrder": {
+      "active": "Active",
+      "paused": "Paused",
+      "cancelled": "Cancelled",
+      "completed": "Completed"
+    },
+    "repricingRule": {
+      "active": "Active",
+      "paused": "Paused",
+      "archived": "Archived"
+    },
+    "return": {
+      "approved": "Approved",
+      "cancelled": "Cancelled",
+      "received": "Received",
+      "refunded": "Refunded",
+      "rejected": "Rejected",
+      "requested": "Requested"
+    },
+    "shipment": {
+      "created": "Created",
+      "delivered": "Delivered",
+      "failed": "Failed",
+      "in_transit": "In transit",
+      "label_ready": "Label ready",
+      "out_for_delivery": "Out for delivery",
+      "picked_up": "Picked up",
+      "returned": "Returned"
+    },
+    "stocktake": {
+      "cancelled": "Cancelled",
+      "completed": "Completed",
+      "draft": "Draft",
+      "in_progress": "In progress"
+    },
+    "supplier": {
+      "active": "Active",
+      "error": "Error",
+      "inactive": "Inactive"
+    },
+    "syncJob": {
+      "completed": "Completed",
+      "failed": "Failed",
+      "running": "Running"
+    },
+    "warehouseDocument": {
+      "cancelled": "Cancelled",
+      "confirmed": "Confirmed",
+      "draft": "Draft"
+    }
+  }
+}

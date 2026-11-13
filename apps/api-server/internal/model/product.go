@@ -1,0 +1,201 @@
+package model
+
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// Product represents a product in the catalogue.
+type Product struct {
+	ID         uuid.UUID `json:"id"`
+	TenantID   uuid.UUID `json:"tenant_id"`
+	ExternalID *string   `json:"external_id,omitempty"`
+	Source     string    `json:"source"`
+	Name       string    `json:"name"`
+	SKU        *string   `json:"sku,omitempty"`
+	EAN        *string   `json:"ean,omitempty"`
+	Price      float64   `json:"price"`
+	// StockQuantity mirrors the legacy products.stock_quantity column. It is
+	// write-only in practice: nothing decrements it on shipment, so it is whatever
+	// was last entered by hand or by an import. Never read it as available stock.
+	StockQuantity int `json:"stock_quantity"`
+	// AvailableStock is the canonical figure, warehouse_stock.quantity - reserved,
+	// summed over every row of the product (ProductRepository.AvailableStockBatch).
+	// It is computed, not stored: on a raw List that does not populate it, 0 means
+	// "not fetched" rather than "out of stock".
+	AvailableStock       int             `json:"available_stock"`
+	Metadata             json.RawMessage `json:"metadata"`
+	Tags                 []string        `json:"tags"`
+	DescriptionShort     string          `json:"description_short"`
+	DescriptionLong      string          `json:"description_long"`
+	Weight               *float64        `json:"weight,omitempty"`
+	Width                *float64        `json:"width,omitempty"`
+	Height               *float64        `json:"height,omitempty"`
+	Depth                *float64        `json:"depth,omitempty"`
+	Category             *string         `json:"category,omitempty"`
+	CategoryID           *uuid.UUID      `json:"category_id,omitempty"`
+	ImageURL             *string         `json:"image_url,omitempty"`
+	Images               json.RawMessage `json:"images"`
+	HasVariants          bool            `json:"has_variants"`
+	IsBundle             bool            `json:"is_bundle"`
+	IsDropship           bool            `json:"is_dropship"`
+	DropshipSupplierID   *uuid.UUID      `json:"dropship_supplier_id,omitempty"`
+	SupplierName         *string         `json:"supplier_name,omitempty"`
+	MarketplaceProviders []string        `json:"marketplace_providers"`
+	CreatedAt            time.Time       `json:"created_at"`
+	UpdatedAt            time.Time       `json:"updated_at"`
+}
+
+// CreateProductRequest is the payload for creating a new product.
+type CreateProductRequest struct {
+	ExternalID         *string         `json:"external_id,omitempty"`
+	Source             string          `json:"source"`
+	Name               string          `json:"name"`
+	SKU                *string         `json:"sku,omitempty"`
+	EAN                *string         `json:"ean,omitempty"`
+	Price              float64         `json:"price"`
+	StockQty           int             `json:"stock_quantity"`
+	Metadata           json.RawMessage `json:"metadata,omitempty"`
+	Tags               []string        `json:"tags,omitempty"`
+	DescriptionShort   string          `json:"description_short,omitempty"`
+	DescriptionLong    string          `json:"description_long,omitempty"`
+	Weight             *float64        `json:"weight,omitempty"`
+	Width              *float64        `json:"width,omitempty"`
+	Height             *float64        `json:"height,omitempty"`
+	Depth              *float64        `json:"depth,omitempty"`
+	Category           *string         `json:"category,omitempty"`
+	CategoryID         *uuid.UUID      `json:"category_id,omitempty"`
+	ImageURL           *string         `json:"image_url,omitempty"`
+	Images             json.RawMessage `json:"images,omitempty"`
+	IsDropship         *bool           `json:"is_dropship,omitempty"`
+	DropshipSupplierID *uuid.UUID      `json:"dropship_supplier_id,omitempty"`
+}
+
+// Validate validates the create product request.
+func (r *CreateProductRequest) Validate() error {
+	if strings.TrimSpace(r.Name) == "" {
+		return errors.New("name is required")
+	}
+	switch r.Source {
+	case "":
+		r.Source = "manual"
+	case "allegro", "woocommerce", "manual", "supplier", "baselinker":
+		// valid
+	default:
+		return errors.New("source must be one of: allegro, woocommerce, manual, supplier, baselinker")
+	}
+	if r.Price < 0 {
+		return errors.New("price must not be negative")
+	}
+	if r.StockQty < 0 {
+		return errors.New("stock_quantity must not be negative")
+	}
+	if err := validateMaxLength("name", r.Name, 500); err != nil {
+		return err
+	}
+	if err := validateMaxLengthPtr("sku", r.SKU, 100); err != nil {
+		return err
+	}
+	if err := validateMaxLengthPtr("ean", r.EAN, 50); err != nil {
+		return err
+	}
+	if err := validateMaxLength("description_short", r.DescriptionShort, 1000); err != nil {
+		return err
+	}
+	if err := validateMaxLength("description_long", r.DescriptionLong, 10000); err != nil {
+		return err
+	}
+	if err := validateMaxLengthPtr("category", r.Category, 100); err != nil {
+		return err
+	}
+	return nil
+}
+
+// UpdateProductRequest is the payload for updating an existing product.
+type UpdateProductRequest struct {
+	ExternalID         *string          `json:"external_id,omitempty"`
+	Source             *string          `json:"source,omitempty"`
+	Name               *string          `json:"name,omitempty"`
+	SKU                *string          `json:"sku,omitempty"`
+	EAN                *string          `json:"ean,omitempty"`
+	Price              *float64         `json:"price,omitempty"`
+	StockQuantity      *int             `json:"stock_quantity,omitempty"`
+	Metadata           *json.RawMessage `json:"metadata,omitempty"`
+	Tags               *[]string        `json:"tags,omitempty"`
+	DescriptionShort   *string          `json:"description_short,omitempty"`
+	DescriptionLong    *string          `json:"description_long,omitempty"`
+	Weight             *float64         `json:"weight,omitempty"`
+	Width              *float64         `json:"width,omitempty"`
+	Height             *float64         `json:"height,omitempty"`
+	Depth              *float64         `json:"depth,omitempty"`
+	Category           *string          `json:"category,omitempty"`
+	CategoryID         *uuid.UUID       `json:"category_id,omitempty"`
+	ImageURL           *string          `json:"image_url,omitempty"`
+	Images             *json.RawMessage `json:"images,omitempty"`
+	IsBundle           *bool            `json:"is_bundle,omitempty"`
+	IsDropship         *bool            `json:"is_dropship,omitempty"`
+	DropshipSupplierID *uuid.UUID       `json:"dropship_supplier_id,omitempty"`
+}
+
+// Validate validates the update product request.
+func (r *UpdateProductRequest) Validate() error {
+	if r.ExternalID == nil && r.Source == nil && r.Name == nil && r.SKU == nil &&
+		r.EAN == nil && r.Price == nil && r.StockQuantity == nil && r.Metadata == nil &&
+		r.Tags == nil && r.DescriptionShort == nil && r.DescriptionLong == nil &&
+		r.Weight == nil && r.Width == nil && r.Height == nil && r.Depth == nil &&
+		r.Category == nil && r.CategoryID == nil && r.ImageURL == nil && r.Images == nil && r.IsBundle == nil &&
+		r.IsDropship == nil && r.DropshipSupplierID == nil {
+		return errors.New("at least one field must be provided")
+	}
+	if r.Source != nil {
+		switch *r.Source {
+		case "allegro", "woocommerce", "manual", "baselinker":
+			// valid
+		default:
+			return errors.New("source must be one of: allegro, woocommerce, manual, baselinker")
+		}
+	}
+	if r.Price != nil && *r.Price < 0 {
+		return errors.New("price must not be negative")
+	}
+	if r.StockQuantity != nil && *r.StockQuantity < 0 {
+		return errors.New("stock_quantity must not be negative")
+	}
+	if err := validateMaxLengthPtr("name", r.Name, 500); err != nil {
+		return err
+	}
+	if err := validateMaxLengthPtr("sku", r.SKU, 100); err != nil {
+		return err
+	}
+	if err := validateMaxLengthPtr("ean", r.EAN, 50); err != nil {
+		return err
+	}
+	if err := validateMaxLengthPtr("description_short", r.DescriptionShort, 1000); err != nil {
+		return err
+	}
+	if err := validateMaxLengthPtr("description_long", r.DescriptionLong, 10000); err != nil {
+		return err
+	}
+	if err := validateMaxLengthPtr("category", r.Category, 100); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ProductListFilter holds query parameters for listing products.
+type ProductListFilter struct {
+	Name        *string
+	SKU         *string
+	Tag         *string
+	Category    *string
+	CategoryIDs []uuid.UUID // includes target category + all descendants
+	SupplierID  *uuid.UUID
+	Source      *string
+	Search      *string
+	Marketplace *string // "allegro", "woocommerce", etc. or "none" for unlisted
+	PaginationParams
+}

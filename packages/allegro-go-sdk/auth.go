@@ -1,0 +1,138 @@
+package allegro
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+)
+
+// AuthorizationURL builds the URL a user should visit to authorize the application.
+func (c *Client) AuthorizationURL(state string, scopes ...string) string {
+	v := url.Values{
+		"response_type": {"code"},
+		"client_id":     {c.clientID},
+		"redirect_uri":  {c.redirectURI},
+		"state":         {state},
+	}
+	if len(scopes) > 0 {
+		v.Set("scope", strings.Join(scopes, " "))
+	}
+	return c.authBaseURL + "/authorize?" + v.Encode()
+}
+
+// ExchangeCode exchanges an authorization code for access and refresh tokens.
+func (c *Client) ExchangeCode(ctx context.Context, code string) (*TokenResponse, error) {
+	data := url.Values{
+		"grant_type":   {"authorization_code"},
+		"code":         {code},
+		"redirect_uri": {c.redirectURI},
+	}
+
+	tok, err := c.postToken(ctx, data)
+	if err != nil {
+		return nil, err
+	}
+
+	c.applyTokenResponse(tok)
+	return tok, nil
+}
+
+// RefreshAccessToken refreshes the access token using the stored refresh token.
+func (c *Client) RefreshAccessToken(ctx context.Context) (*TokenResponse, error) {
+	rt := c.getRefreshToken()
+	data := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {rt},
+	}
+
+	tok, err := c.postToken(ctx, data)
+	if err != nil {
+		return nil, wrapTokenRefreshError(err)
+	}
+	if tok.AccessToken == "" || tok.RefreshToken == "" {
+		return nil, fmt.Errorf("allegro: token response missing access_token or refresh_token")
+	}
+
+	c.applyTokenResponse(tok)
+
+	c.mu.Lock()
+	callback := c.onTokenRefresh
+	at := c.accessToken
+	refreshTok := c.refreshToken
+	expiry := c.tokenExpiry
+	c.mu.Unlock()
+
+	if callback != nil {
+		if persistErr := callback(at, refreshTok, expiry); persistErr != nil {
+			return tok, fmt.Errorf("allegro: persist refreshed tokens: %w", persistErr)
+		}
+	}
+
+	return tok, nil
+}
+
+func wrapTokenRefreshError(err error) error {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusBadRequest || apiErr.StatusCode == http.StatusUnauthorized) {
+		return fmt.Errorf("%w: %w", ErrReconnectRequired, apiErr)
+	}
+	return err
+}
+
+// SetTokens manually updates the stored OAuth tokens.
+func (c *Client) SetTokens(accessToken, refreshToken string, expiry time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.accessToken = accessToken
+	c.refreshToken = refreshToken
+	c.tokenExpiry = expiry
+}
+
+func (c *Client) postToken(ctx context.Context, data url.Values) (*TokenResponse, error) {
+	endpoint := c.authBaseURL + "/token"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("allegro: create token request: %w", err)
+	}
+
+	req.SetBasicAuth(c.clientID, c.clientSecret)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("allegro: execute token request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		apiErr := &APIError{StatusCode: resp.StatusCode}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(apiErr); err != nil {
+			apiErr.Message = http.StatusText(resp.StatusCode)
+		}
+		return nil, apiErr
+	}
+
+	var tok TokenResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&tok); err != nil {
+		return nil, fmt.Errorf("allegro: decode token response: %w", err)
+	}
+
+	return &tok, nil
+}
+
+func (c *Client) applyTokenResponse(tok *TokenResponse) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.accessToken = tok.AccessToken
+	if tok.RefreshToken != "" {
+		c.refreshToken = tok.RefreshToken
+	}
+	c.tokenExpiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
+}

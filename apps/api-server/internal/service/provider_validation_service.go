@@ -1,0 +1,284 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/openoms-org/openoms/apps/api-server/internal/model"
+	"github.com/openoms-org/openoms/apps/api-server/internal/obsmetrics"
+	"github.com/openoms-org/openoms/apps/api-server/internal/repository"
+)
+
+// Validation engine domain errors.
+var (
+	ErrInvalidProbe                 = errors.New("invalid validation probe")
+	ErrInvalidValidationEnv         = errors.New("invalid validation environment")
+	ErrInvalidResultStatus          = errors.New("invalid validation result status")
+	ErrDestructiveProbeNotConfirmed = errors.New("destructive probes require explicit confirmation")
+	ErrValidationRunNotFound        = errors.New("validation run not found")
+	ErrValidationRunFinalized       = errors.New("validation run is finalized and immutable")
+)
+
+// ProviderValidationService owns provider-version validation: probe definitions,
+// immutable validation runs/results, the run verdict, and auto-creation of
+// integration gaps from failures. The actual probe execution against live
+// providers is out of scope here; callers record already-redacted results.
+type ProviderValidationService struct {
+	pool *pgxpool.Pool
+	vers *repository.ProviderVersionRepository
+	caps *repository.ProviderCapabilityRepository
+	val  *repository.ProviderValidationRepository
+	// metrics is an OPTIONAL, best-effort observability handle (OPE-422). nil-receiver
+	// safe, so every record call is a no-op when it is not wired and can never affect
+	// the validation run.
+	metrics *obsmetrics.FulfillmentMetrics
+}
+
+// NewProviderValidationService wires the service to the pool and repositories.
+func NewProviderValidationService(
+	pool *pgxpool.Pool,
+	vers *repository.ProviderVersionRepository,
+	caps *repository.ProviderCapabilityRepository,
+	val *repository.ProviderValidationRepository,
+) *ProviderValidationService {
+	return &ProviderValidationService{pool: pool, vers: vers, caps: caps, val: val}
+}
+
+// WithMetrics wires the OPTIONAL metrics collector (OPE-422). Returns the service
+// for chaining. Safe to omit: the collector is nil-receiver safe.
+func (s *ProviderValidationService) WithMetrics(m *obsmetrics.FulfillmentMetrics) *ProviderValidationService {
+	if s == nil {
+		return nil
+	}
+	s.metrics = m
+	return s
+}
+
+func (s *ProviderValidationService) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
+	return runInTx(ctx, s.pool, fn)
+}
+
+func (s *ProviderValidationService) getVersion(ctx context.Context, versionID uuid.UUID) (*model.ProviderVersion, error) {
+	v, err := s.vers.GetByID(ctx, versionID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrProviderVersionNotFound
+		}
+		return nil, err
+	}
+	return v, nil
+}
+
+// SetProbes replaces a version's probe set (frozen once published; validated).
+// The frozen check is re-run under the definition-row lock in the same
+// transaction as the write, so it cannot race a publish transition.
+func (s *ProviderValidationService) SetProbes(ctx context.Context, versionID uuid.UUID, probes []model.ProviderValidationProbe) ([]model.ProviderValidationProbe, error) {
+	// Fast pre-check for a friendly error; re-checked authoritatively under lock.
+	v, err := s.getVersion(ctx, versionID)
+	if err != nil {
+		return nil, err
+	}
+	if model.IsPublishedState(v.PublicationState) {
+		return nil, ErrProviderVersionFrozen
+	}
+	if err := model.ValidateProbes(probes); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidProbe, err.Error())
+	}
+	if err := s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := requireUnpublishedLocked(ctx, tx, versionID); err != nil {
+			return err
+		}
+		return s.val.ReplaceProbes(ctx, tx, versionID, probes)
+	}); err != nil {
+		return nil, err
+	}
+	return s.val.ListProbes(ctx, versionID)
+}
+
+// GetProbes returns a version's probes.
+func (s *ProviderValidationService) GetProbes(ctx context.Context, versionID uuid.UUID) ([]model.ProviderValidationProbe, error) {
+	if _, err := s.getVersion(ctx, versionID); err != nil {
+		return nil, err
+	}
+	return s.val.ListProbes(ctx, versionID)
+}
+
+// StartRun opens a pending validation run. If any declared probe is destructive,
+// allowDestructive must be true (safety gate).
+func (s *ProviderValidationService) StartRun(ctx context.Context, versionID uuid.UUID, environment string, allowDestructive bool, actorID *uuid.UUID) (*model.ProviderValidationRun, error) {
+	if _, err := s.getVersion(ctx, versionID); err != nil {
+		return nil, err
+	}
+	if !model.IsValidValidationEnv(environment) {
+		return nil, ErrInvalidValidationEnv
+	}
+	probes, err := s.val.ListProbes(ctx, versionID)
+	if err != nil {
+		return nil, err
+	}
+	if !allowDestructive {
+		for _, p := range probes {
+			if p.Destructive {
+				return nil, ErrDestructiveProbeNotConfirmed
+			}
+		}
+	}
+	return s.val.CreateRun(ctx, versionID, environment, actorID)
+}
+
+// RecordResult records (or replaces) a probe result on a pending run. The
+// finalized check is re-run under the run-row lock in the same transaction as
+// the write, so it cannot race a concurrent CompleteRun.
+func (s *ProviderValidationService) RecordResult(ctx context.Context, runID uuid.UUID, probeType, label, status, observation, payloadHash, findings string) (*model.ProviderValidationResult, error) {
+	// Fast pre-check for a friendly error; re-checked authoritatively under lock.
+	run, err := s.getRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run.Verdict != model.RunVerdictPending {
+		return nil, ErrValidationRunFinalized
+	}
+	if !model.IsValidResultStatus(status) {
+		return nil, ErrInvalidResultStatus
+	}
+	var out *model.ProviderValidationResult
+	if err := s.inTx(ctx, func(tx pgx.Tx) error {
+		locked, err := s.lockRun(ctx, tx, runID)
+		if err != nil {
+			return err
+		}
+		if locked.Verdict != model.RunVerdictPending {
+			return ErrValidationRunFinalized
+		}
+		out, err = s.val.UpsertResult(ctx, tx, model.ProviderValidationResult{
+			RunID: runID, ProbeType: probeType, Label: label, Status: status,
+			Observation: observation, PayloadHash: payloadHash, Findings: findings,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// SQL guard: no pending run matched the insert source.
+				return ErrValidationRunFinalized
+			}
+			return err
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CompleteRun finalizes a pending run: under the run-row lock it computes the
+// verdict and, atomically, records the verdict + an integration gap for each
+// failed/errored probe. A run finalized by a concurrent CompleteRun surfaces
+// ErrValidationRunFinalized and is never overwritten.
+func (s *ProviderValidationService) CompleteRun(ctx context.Context, runID uuid.UUID) (*model.ProviderValidationRun, error) {
+	// Fast pre-check for a friendly error; re-checked authoritatively under lock.
+	run, err := s.getRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run.Verdict != model.RunVerdictPending {
+		return nil, ErrValidationRunFinalized
+	}
+	var verdict string
+	var results []model.ProviderValidationResult
+	now := time.Now().UTC()
+	if err := s.inTx(ctx, func(tx pgx.Tx) error {
+		locked, err := s.lockRun(ctx, tx, runID)
+		if err != nil {
+			return err
+		}
+		if locked.Verdict != model.RunVerdictPending {
+			return ErrValidationRunFinalized
+		}
+		results, err = s.val.ListResults(ctx, tx, runID)
+		if err != nil {
+			return err
+		}
+		verdict = model.VerdictFromResults(results)
+		if err := s.val.FinalizeRun(ctx, tx, runID, verdict, now); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// SQL guard: no pending run matched the update.
+				return ErrValidationRunFinalized
+			}
+			return err
+		}
+		for _, r := range results {
+			gapType, severity := model.GapForFailedProbe(r.ProbeType, r.Status)
+			if gapType == "" {
+				continue
+			}
+			desc := fmt.Sprintf("validation probe %q (%s) %s", r.Label, r.ProbeType, r.Status)
+			if _, err := s.caps.CreateGap(ctx, tx, locked.ProviderVersionID, gapType, severity, desc); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	// Best-effort metrics AFTER the run is finalized (OPE-422). verdict is a bounded
+	// enum (pending|passed|failed|error); the collector coerces anything else to
+	// "other". Each failed/errored probe result is counted once as a validation
+	// failure. nil-safe; never affects the returned run.
+	s.metrics.RecordValidationRun(verdict)
+	for _, r := range results {
+		if r.Status == model.ResultStatusFailed || r.Status == model.ResultStatusError {
+			s.metrics.RecordValidationFailure()
+		}
+	}
+	return s.GetRunWithResults(ctx, runID)
+}
+
+func (s *ProviderValidationService) getRun(ctx context.Context, runID uuid.UUID) (*model.ProviderValidationRun, error) {
+	run, err := s.val.GetRun(ctx, runID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrValidationRunNotFound
+		}
+		return nil, err
+	}
+	return run, nil
+}
+
+// lockRun locks the run row in the caller's transaction and returns its
+// authoritative current header, serializing finalization and result writes.
+func (s *ProviderValidationService) lockRun(ctx context.Context, tx pgx.Tx, runID uuid.UUID) (*model.ProviderValidationRun, error) {
+	run, err := s.val.GetRunForUpdate(ctx, tx, runID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrValidationRunNotFound
+		}
+		return nil, err
+	}
+	return run, nil
+}
+
+// ListRuns returns a version's validation runs.
+func (s *ProviderValidationService) ListRuns(ctx context.Context, versionID uuid.UUID) ([]model.ProviderValidationRun, error) {
+	if _, err := s.getVersion(ctx, versionID); err != nil {
+		return nil, err
+	}
+	return s.val.ListRuns(ctx, versionID)
+}
+
+// GetRunWithResults returns a run header with its probe results.
+func (s *ProviderValidationService) GetRunWithResults(ctx context.Context, runID uuid.UUID) (*model.ProviderValidationRun, error) {
+	run, err := s.getRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	results, err := s.val.ListResults(ctx, s.pool, runID)
+	if err != nil {
+		return nil, err
+	}
+	run.Results = results
+	return run, nil
+}

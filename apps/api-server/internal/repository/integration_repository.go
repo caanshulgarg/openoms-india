@@ -1,0 +1,164 @@
+package repository
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/openoms-org/openoms/apps/api-server/internal/model"
+)
+
+// IntegrationRepository handles persistence for marketplace and service integrations.
+type IntegrationRepository struct{}
+
+// NewIntegrationRepository creates a new IntegrationRepository.
+func NewIntegrationRepository() *IntegrationRepository {
+	return &IntegrationRepository{}
+}
+
+// Count returns the number of active integrations for the current tenant.
+func (r *IntegrationRepository) Count(ctx context.Context, tx pgx.Tx) (int, error) {
+	var count int
+	err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM integrations`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count integrations: %w", err)
+	}
+	return count, nil
+}
+
+// List returns all integrations with their encrypted credentials.
+func (r *IntegrationRepository) List(ctx context.Context, tx pgx.Tx) ([]model.IntegrationWithCreds, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT id, tenant_id, provider, label, status, credentials, settings, sync_cursor, error_message, last_sync_at, created_at, updated_at
+		 FROM integrations ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list integrations: %w", err)
+	}
+	defer rows.Close()
+
+	var integrations []model.IntegrationWithCreds
+	for rows.Next() {
+		var i model.IntegrationWithCreds
+		var credsJSON json.RawMessage
+		if err := rows.Scan(&i.ID, &i.TenantID, &i.Provider, &i.Label, &i.Status,
+			&credsJSON, &i.Settings, &i.SyncCursor, &i.ErrorMessage, &i.LastSyncAt, &i.CreatedAt, &i.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan integration: %w", err)
+		}
+		// Extract the encrypted string from the JSON string value
+		if len(credsJSON) > 0 {
+			if err := json.Unmarshal(credsJSON, &i.EncryptedCredentials); err != nil {
+				slog.Warn("failed to unmarshal integration credentials", "error", err, "integration_id", i.ID)
+			}
+		}
+		integrations = append(integrations, i)
+	}
+	return integrations, rows.Err()
+}
+
+// FindByID returns an integration by its ID.
+func (r *IntegrationRepository) FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*model.IntegrationWithCreds, error) {
+	var i model.IntegrationWithCreds
+	var credsJSON json.RawMessage
+	err := tx.QueryRow(ctx,
+		`SELECT id, tenant_id, provider, label, status, credentials, settings, sync_cursor, error_message, last_sync_at, created_at, updated_at
+		 FROM integrations WHERE id = $1`, id,
+	).Scan(&i.ID, &i.TenantID, &i.Provider, &i.Label, &i.Status,
+		&credsJSON, &i.Settings, &i.SyncCursor, &i.ErrorMessage, &i.LastSyncAt, &i.CreatedAt, &i.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("find integration by id: %w", err)
+	}
+	if len(credsJSON) > 0 {
+		if err := json.Unmarshal(credsJSON, &i.EncryptedCredentials); err != nil {
+			slog.Warn("failed to unmarshal integration credentials", "error", err, "integration_id", i.ID)
+		}
+	}
+	return &i, nil
+}
+
+// FindByProvider returns the first integration matching the given provider slug.
+func (r *IntegrationRepository) FindByProvider(ctx context.Context, tx pgx.Tx, provider string) (*model.IntegrationWithCreds, error) {
+	var i model.IntegrationWithCreds
+	var credsJSON json.RawMessage
+	err := tx.QueryRow(ctx,
+		`SELECT id, tenant_id, provider, label, status, credentials, settings, sync_cursor, error_message, last_sync_at, created_at, updated_at
+		 FROM integrations WHERE provider = $1 LIMIT 1`, provider,
+	).Scan(&i.ID, &i.TenantID, &i.Provider, &i.Label, &i.Status,
+		&credsJSON, &i.Settings, &i.SyncCursor, &i.ErrorMessage, &i.LastSyncAt, &i.CreatedAt, &i.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("find integration by provider: %w", err)
+	}
+	if len(credsJSON) > 0 {
+		if err := json.Unmarshal(credsJSON, &i.EncryptedCredentials); err != nil {
+			slog.Warn("failed to unmarshal integration credentials", "error", err, "integration_id", i.ID)
+		}
+	}
+	return &i, nil
+}
+
+// Create inserts a new integration with encrypted credentials.
+func (r *IntegrationRepository) Create(ctx context.Context, tx pgx.Tx, integration *model.Integration, encryptedCreds string) error {
+	// Store encrypted credentials as a JSON string value in the JSONB column
+	credsJSON, _ := json.Marshal(encryptedCreds)
+	return tx.QueryRow(ctx,
+		`INSERT INTO integrations (id, tenant_id, provider, label, status, credentials, settings)
+		 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
+		 RETURNING created_at, updated_at`,
+		integration.ID, integration.TenantID, integration.Provider, integration.Label, integration.Status,
+		string(credsJSON), string(integration.Settings),
+	).Scan(&integration.CreatedAt, &integration.UpdatedAt)
+}
+
+// Update applies partial updates to an integration.
+func (r *IntegrationRepository) Update(ctx context.Context, tx pgx.Tx, id uuid.UUID, req model.UpdateIntegrationRequest, encryptedCreds *string) error {
+	ub := NewUpdateBuilder()
+	SetPtr(ub, "label", req.Label)
+	SetPtr(ub, "status", req.Status)
+	if encryptedCreds != nil {
+		credsJSON, _ := json.Marshal(*encryptedCreds)
+		ub.SetExpr("credentials = $%d::jsonb", string(credsJSON))
+	}
+	if req.Settings != nil {
+		ub.SetExpr("settings = $%d::jsonb", string(*req.Settings))
+	}
+	SetPtr(ub, "sync_cursor", req.SyncCursor)
+	SetPtr(ub, "error_message", req.ErrorMessage)
+
+	if ub.IsEmpty() {
+		return nil
+	}
+
+	ub.SetRaw("updated_at = NOW()")
+	query := fmt.Sprintf("UPDATE integrations SET %s WHERE id = $%d",
+		ub.SetClause(), ub.NextArgIdx())
+	args := append(ub.Args(), id)
+
+	ct, err := tx.Exec(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("update integration: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return fmt.Errorf("integration not found")
+	}
+	return nil
+}
+
+// Delete removes an integration by its ID.
+func (r *IntegrationRepository) Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
+	ct, err := tx.Exec(ctx, "DELETE FROM integrations WHERE id = $1", id)
+	if err != nil {
+		return fmt.Errorf("delete integration: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return fmt.Errorf("integration not found")
+	}
+	return nil
+}

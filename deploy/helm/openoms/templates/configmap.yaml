@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "openoms.fullname" . }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "openoms.labels" . | nindent 4 }}
+data:
+  PORT: {{ .Values.apiServer.port | quote }}
+  ENV: {{ .Values.apiServer.env | quote }}
+  BASE_URL: {{ .Values.apiServer.baseUrl | quote }}
+  FRONTEND_URL: {{ .Values.apiServer.frontendUrl | quote }}
+  TRUSTED_PROXY_CIDRS: {{ join "," .Values.apiServer.trustedProxyCIDRs | quote }}
+  UPLOAD_DIR: {{ .Values.apiServer.uploadDir | quote }}
+  MAX_UPLOAD_SIZE: {{ .Values.apiServer.maxUploadSize | quote }}
+  S3_ENABLED: {{ .Values.apiServer.s3.enabled | quote }}
+  S3_BUCKET: {{ .Values.apiServer.s3.bucket | quote }}
+  S3_REGION: {{ .Values.apiServer.s3.region | quote }}
+  S3_ENDPOINT: {{ .Values.apiServer.s3.endpoint | quote }}
+  S3_PUBLIC_URL: {{ .Values.apiServer.s3.publicUrl | quote }}
+  S3_FORCE_PATH_STYLE: {{ .Values.apiServer.s3.forcePathStyle | quote }}
+  FEATURE_ALLEGRO: {{ .Values.apiServer.features.allegro | quote }}
+  FEATURE_INPOST: {{ .Values.apiServer.features.inpost | quote }}
+  OPENAI_MODEL: {{ .Values.apiServer.openai.model | quote }}
+  REGISTRATION_MODE: {{ .Values.apiServer.registrationMode | default "invite" | quote }}
+  OPENOMS_API_SURFACE: {{ .Values.apiServer.apiSurfaceMode | default "client-ready" | quote }}
+  ENABLE_API_DOCS: {{ .Values.apiServer.enableApiDocs | default false | quote }}
+  REDIS_URL: {{ .Values.redis.url | quote }}
+  ALLOW_IN_MEMORY_STATE: {{ .Values.apiServer.allowInMemoryState | default false | quote }}
+  SENTRY_RELEASE: {{ .Values.sentry.release | default "" | quote }}
+  {{- if .Values.apiServer.billing }}
+  STRIPE_PUBLIC_KEY: {{ .Values.apiServer.billing.stripePublicKey | default "" | quote }}
+  BILLING_PLANS: {{ .Values.apiServer.billing.plans | default "" | quote }}
+  {{- end }}
+  {{- if .Values.apiServer.sentry }}
+  SENTRY_ENVIRONMENT: {{ .Values.apiServer.sentry.environment | default "production" | quote }}
+  SENTRY_TRACES_SAMPLE_RATE: {{ .Values.apiServer.sentry.tracesSampleRate | default "0.1" | quote }}
+  {{- end }}

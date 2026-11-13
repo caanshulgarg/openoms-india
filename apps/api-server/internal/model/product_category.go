@@ -1,0 +1,171 @@
+package model
+
+import (
+	"errors"
+	"regexp"
+	"strings"
+	"time"
+	"unicode"
+
+	"github.com/google/uuid"
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
+)
+
+// MaxCategoryDepth is the maximum nesting depth for product categories.
+const MaxCategoryDepth = 5
+
+// ProductCategory represents a hierarchical category for organizing products.
+type ProductCategory struct {
+	ID        uuid.UUID         `json:"id"`
+	TenantID  uuid.UUID         `json:"tenant_id"`
+	ParentID  *uuid.UUID        `json:"parent_id,omitempty"`
+	Name      string            `json:"name"`
+	Slug      string            `json:"slug"`
+	Color     string            `json:"color"`
+	Icon      *string           `json:"icon,omitempty"`
+	Position  int               `json:"position"`
+	Depth     int               `json:"depth"`
+	Children  []ProductCategory `json:"children,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+	UpdatedAt time.Time         `json:"updated_at"`
+}
+
+// CreateCategoryRequest is the payload for creating a new product category.
+type CreateCategoryRequest struct {
+	Name     string     `json:"name"`
+	ParentID *uuid.UUID `json:"parent_id,omitempty"`
+	Color    string     `json:"color,omitempty"`
+	Icon     *string    `json:"icon,omitempty"`
+}
+
+// Validate validates the create category request.
+func (r *CreateCategoryRequest) Validate() error {
+	if strings.TrimSpace(r.Name) == "" {
+		return errors.New("name is required")
+	}
+	if err := validateMaxLength("name", r.Name, 200); err != nil {
+		return err
+	}
+	if r.Color == "" {
+		r.Color = "#6b7280"
+	}
+	return nil
+}
+
+// UpdateCategoryRequest is the payload for updating an existing product category.
+type UpdateCategoryRequest struct {
+	Name     *string    `json:"name,omitempty"`
+	ParentID *uuid.UUID `json:"parent_id,omitempty"`
+	Color    *string    `json:"color,omitempty"`
+	Icon     *string    `json:"icon,omitempty"`
+	Position *int       `json:"position,omitempty"`
+}
+
+// Validate validates the update category request.
+func (r *UpdateCategoryRequest) Validate() error {
+	if r.Name == nil && r.ParentID == nil && r.Color == nil && r.Icon == nil && r.Position == nil {
+		return errors.New("at least one field must be provided")
+	}
+	if r.Name != nil {
+		if strings.TrimSpace(*r.Name) == "" {
+			return errors.New("name must not be empty")
+		}
+		if err := validateMaxLength("name", *r.Name, 200); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CategoryListFilter holds query parameters for listing product categories.
+type CategoryListFilter struct {
+	ParentID    *uuid.UUID
+	IncludeTree bool
+}
+
+// GenerateSlug creates a URL-safe slug from a name.
+// Polish diacritics are transliterated (ą→a, ł→l, etc.), the rest is lowercased and non-alphanum replaced with hyphens.
+func GenerateSlug(name string) string {
+	// Normalize to NFD, strip combining marks, then NFC
+	t := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
+	result, _, _ := transform.String(t, name)
+
+	// Polish-specific replacements that NFD doesn't handle
+	replacer := strings.NewReplacer("ł", "l", "Ł", "L")
+	result = replacer.Replace(result)
+
+	result = strings.ToLower(result)
+
+	// Replace non-alphanumeric with hyphens
+	re := regexp.MustCompile(`[^a-z0-9]+`)
+	result = re.ReplaceAllString(result, "-")
+
+	return strings.Trim(result, "-")
+}
+
+// BuildCategoryTree builds a tree from a flat slice of categories.
+// Categories must have ParentID set correctly. Root categories have nil ParentID.
+func BuildCategoryTree(categories []ProductCategory) []ProductCategory {
+	byParent := make(map[uuid.UUID][]ProductCategory)
+	var roots []ProductCategory
+
+	for _, c := range categories {
+		c.Children = nil // reset
+		if c.ParentID == nil {
+			roots = append(roots, c)
+		} else {
+			byParent[*c.ParentID] = append(byParent[*c.ParentID], c)
+		}
+	}
+
+	var attachChildren func(cats []ProductCategory) []ProductCategory
+	attachChildren = func(cats []ProductCategory) []ProductCategory {
+		for i := range cats {
+			children := byParent[cats[i].ID]
+			if len(children) > 0 {
+				cats[i].Children = attachChildren(children)
+			}
+		}
+		return cats
+	}
+
+	return attachChildren(roots)
+}
+
+// MarketplaceCategoryMapping maps an external marketplace category to an internal OMS category.
+type MarketplaceCategoryMapping struct {
+	ID                   uuid.UUID  `json:"id"`
+	TenantID             uuid.UUID  `json:"tenant_id"`
+	IntegrationID        uuid.UUID  `json:"integration_id"`
+	ExternalCategoryID   string     `json:"external_category_id"`
+	ExternalCategoryName string     `json:"external_category_name"`
+	CategoryID           *uuid.UUID `json:"category_id,omitempty"`
+	AutoCreated          bool       `json:"auto_created"`
+	Confirmed            bool       `json:"confirmed"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+}
+
+// UpsertMarketplaceCategoryMappingRequest is the request body for creating/updating a mapping.
+type UpsertMarketplaceCategoryMappingRequest struct {
+	ExternalCategoryID   string     `json:"external_category_id"`
+	ExternalCategoryName string     `json:"external_category_name,omitempty"`
+	CategoryID           *uuid.UUID `json:"category_id,omitempty"`
+	Confirmed            bool       `json:"confirmed"`
+}
+
+// Validate checks required fields and length limits.
+func (r *UpsertMarketplaceCategoryMappingRequest) Validate() error {
+	if strings.TrimSpace(r.ExternalCategoryID) == "" {
+		return errors.New("external_category_id is required")
+	}
+	if err := validateMaxLength("external_category_id", r.ExternalCategoryID, 100); err != nil {
+		return err
+	}
+	if err := validateMaxLength("external_category_name", r.ExternalCategoryName, 500); err != nil {
+		return err
+	}
+	return nil
+}

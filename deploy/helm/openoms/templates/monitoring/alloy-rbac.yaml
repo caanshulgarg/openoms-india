@@ -1,0 +1,47 @@
+{{- if and .Values.monitoring .Values.monitoring.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "openoms.fullname" . }}-alloy
+  labels:
+    {{- include "openoms.labels" . | nindent 4 }}
+    app.kubernetes.io/component: monitoring
+rules:
+  # Pod + namespace discovery (discovery.kubernetes role = "pod").
+  - apiGroups: [""]
+    resources: ["pods", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  # Log collection via the Kubernetes API (loki.source.kubernetes). The configured
+  # pod discovery is cluster-wide (all namespaces, no namespace filter), so this
+  # stays cluster-scoped and read-only; scoping it to a Role would 403 on the
+  # other namespaces the collector observes. get is sufficient for /log.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # Node discovery (discovery.kubernetes role = "node").
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  # Kubelet authorization for direct /metrics + /metrics/cadvisor scraping.
+  # nodes/proxy is intentionally NOT granted — only the metrics subresource is
+  # used, and no scrape goes through the apiserver node proxy.
+  - apiGroups: [""]
+    resources: ["nodes/metrics"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "openoms.fullname" . }}-alloy
+  labels:
+    {{- include "openoms.labels" . | nindent 4 }}
+    app.kubernetes.io/component: monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "openoms.fullname" . }}-alloy
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "openoms.fullname" . }}-alloy
+    namespace: {{ .Values.namespace }}
+{{- end }}

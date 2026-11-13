@@ -1,0 +1,270 @@
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from "vitest";
+import { server } from "@/test/server";
+import { http, HttpResponse } from "msw";
+import {
+  renderWithProviders,
+  screen,
+  waitFor,
+  userEvent,
+} from "@/test/test-utils";
+import { useAuthStore } from "@/lib/auth";
+
+const API_BASE = "*/v1";
+
+// ---------------------------------------------------------------------------
+// Mocks for Next.js navigation
+// ---------------------------------------------------------------------------
+const mockPush = vi.fn();
+const mockReplace = vi.fn();
+
+vi.mock("next/navigation", () => ({
+  usePathname: vi.fn(() => "/onboarding"),
+  useRouter: vi.fn(() => ({
+    push: mockPush,
+    replace: mockReplace,
+    back: vi.fn(),
+  })),
+  useSearchParams: vi.fn(() => new URLSearchParams()),
+}));
+
+vi.mock("next/link", () => ({
+  default: ({
+    children,
+    href,
+    ...props
+  }: {
+    children: React.ReactNode;
+    href: string;
+    [key: string]: unknown;
+  }) => (
+    <a href={href} {...props}>
+      {children}
+    </a>
+  ),
+}));
+
+// ---------------------------------------------------------------------------
+// Page import — will fail until implementation exists
+// ---------------------------------------------------------------------------
+import OnboardingPage from "@/app/(onboarding)/onboarding/page";
+
+beforeAll(() => server.listen({ onUnhandledRequest: "bypass" }));
+beforeEach(() => {
+  useAuthStore.getState().setAuth("test-token", {} as never, {} as never);
+});
+afterEach(() => {
+  server.resetHandlers();
+  mockPush.mockClear();
+  mockReplace.mockClear();
+});
+afterAll(() => server.close());
+
+// ---------------------------------------------------------------------------
+// Default MSW handlers for onboarding
+// ---------------------------------------------------------------------------
+function setupOnboardingHandlers(overrides: {
+  status?: Record<string, unknown>;
+} = {}) {
+  const defaultStatus = {
+    completed: false,
+    current_step: 1,
+    completed_steps: [],
+    skipped_steps: [],
+    completed_at: null,
+    dismissed: false,
+  };
+
+  server.use(
+    http.get(`${API_BASE}/onboarding/status`, () => {
+      return HttpResponse.json(overrides.status ?? defaultStatus);
+    })
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Page rendering and stepper
+// ---------------------------------------------------------------------------
+describe("OnboardingPage", () => {
+  describe("stepper rendering", () => {
+    it("renders 4 steps in the stepper", async () => {
+      setupOnboardingHandlers();
+      renderWithProviders(<OnboardingPage />);
+
+      // With next-intl mock, translation keys are returned as-is
+      await waitFor(() => {
+        expect(screen.getAllByText(/stepTitles\.companyData/i).length).toBeGreaterThanOrEqual(1);
+      });
+      expect(screen.getAllByText(/stepTitles\.defaultWarehouse/i).length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText(/stepTitles\.firstIntegration/i).length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText(/stepTitles\.inviteTeam/i).length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("shows step 1 as active by default", async () => {
+      setupOnboardingHandlers();
+      renderWithProviders(<OnboardingPage />);
+
+      // Step 1 form fields should be visible
+      await waitFor(() => {
+        expect(screen.getAllByText(/stepTitles\.companyData/i).length).toBeGreaterThanOrEqual(1);
+      });
+    });
+
+    it("shows current step based on API response", async () => {
+      setupOnboardingHandlers({
+        status: {
+          completed: false,
+          current_step: 3,
+          completed_steps: [1],
+          skipped_steps: [2],
+          completed_at: null,
+          dismissed: false,
+        },
+      });
+      renderWithProviders(<OnboardingPage />);
+
+      // Should show step 3 content (integration)
+      await waitFor(() => {
+        expect(screen.getAllByText(/stepTitles\.firstIntegration/i).length).toBeGreaterThanOrEqual(1);
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tests: Step 1 — Company details form
+  // ---------------------------------------------------------------------------
+  describe("step 1 — company details", () => {
+    it("renders company form fields", async () => {
+      setupOnboardingHandlers();
+      renderWithProviders(<OnboardingPage />);
+
+      await waitFor(() => {
+        // NIP field (10-digit Polish tax ID)
+        expect(screen.getByLabelText(/nip/i)).toBeInTheDocument();
+      });
+    });
+
+    it("step 1 has no skip button (required step)", async () => {
+      setupOnboardingHandlers();
+      renderWithProviders(<OnboardingPage />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText(/stepTitles\.companyData/i).length).toBeGreaterThanOrEqual(1);
+      });
+
+      // Step 1 is required — no "dismiss" (skip) button
+      const skipButtons = screen.queryAllByText(/^dismiss$/i);
+      expect(skipButtons).toHaveLength(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tests: Steps 2-4 — Skippable steps
+  // ---------------------------------------------------------------------------
+  describe("skippable steps", () => {
+    it("step 2 has a skip button", async () => {
+      setupOnboardingHandlers({
+        status: {
+          completed: false,
+          current_step: 2,
+          completed_steps: [1],
+          skipped_steps: [],
+          completed_at: null,
+          dismissed: false,
+        },
+      });
+      renderWithProviders(<OnboardingPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/^dismiss$/i)).toBeInTheDocument();
+      });
+    });
+
+    it("step 3 has a skip button", async () => {
+      setupOnboardingHandlers({
+        status: {
+          completed: false,
+          current_step: 3,
+          completed_steps: [1],
+          skipped_steps: [2],
+          completed_at: null,
+          dismissed: false,
+        },
+      });
+      renderWithProviders(<OnboardingPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/^dismiss$/i)).toBeInTheDocument();
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tests: Redirect when completed
+  // ---------------------------------------------------------------------------
+  describe("redirect behavior", () => {
+    it("redirects to dashboard when onboarding is completed", async () => {
+      setupOnboardingHandlers({
+        status: {
+          completed: true,
+          current_step: 4,
+          completed_steps: [1, 2, 3, 4],
+          skipped_steps: [],
+          completed_at: "2025-03-01T12:00:00Z",
+          dismissed: false,
+        },
+      });
+      renderWithProviders(<OnboardingPage />);
+
+      await waitFor(() => {
+        expect(mockReplace).toHaveBeenCalledWith("/");
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tests: "Finish later" button
+  // ---------------------------------------------------------------------------
+  describe("finish later", () => {
+    it("shows a 'finish later' button", async () => {
+      setupOnboardingHandlers();
+      renderWithProviders(<OnboardingPage />);
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/^finishLater$/i)
+        ).toBeInTheDocument();
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tests: Completion screen
+  // ---------------------------------------------------------------------------
+  describe("completion screen", () => {
+    it("shows completion screen when all steps are done", async () => {
+      setupOnboardingHandlers({
+        status: {
+          completed: true,
+          current_step: 4,
+          completed_steps: [1, 2, 3, 4],
+          skipped_steps: [],
+          completed_at: "2025-03-01T12:00:00Z",
+          dismissed: false,
+        },
+      });
+
+      // Note: this test may also redirect. The exact behavior depends
+      // on whether the page shows a completion screen before redirecting.
+      // The implementation should show a completion screen with a
+      // "Go to dashboard" button.
+      renderWithProviders(<OnboardingPage />);
+
+      // Either redirects or shows completion — both are valid
+      await waitFor(() => {
+        const goToDashboard = screen.queryByText(/goToDashboard/i);
+        const didRedirect = mockReplace.mock.calls.length > 0;
+        expect(goToDashboard || didRedirect).toBeTruthy();
+      });
+    });
+  });
+});

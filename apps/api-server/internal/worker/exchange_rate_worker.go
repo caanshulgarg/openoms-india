@@ -1,0 +1,63 @@
+package worker
+
+import (
+	"context"
+	"log/slog"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/openoms-org/openoms/apps/api-server/internal/service"
+)
+
+// ExchangeRateWorker fetches exchange rates daily from NBP for all tenants.
+type ExchangeRateWorker struct {
+	pool                *pgxpool.Pool
+	exchangeRateService *service.ExchangeRateService
+	logger              *slog.Logger
+}
+
+// NewExchangeRateWorker creates a new ExchangeRateWorker.
+func NewExchangeRateWorker(pool *pgxpool.Pool, exchangeRateService *service.ExchangeRateService, logger *slog.Logger) *ExchangeRateWorker {
+	return &ExchangeRateWorker{
+		pool:                pool,
+		exchangeRateService: exchangeRateService,
+		logger:              logger,
+	}
+}
+
+// Name returns the worker identifier.
+func (w *ExchangeRateWorker) Name() string {
+	return "exchange_rate_fetcher"
+}
+
+// Interval returns how frequently the worker should run.
+func (w *ExchangeRateWorker) Interval() time.Duration {
+	return 24 * time.Hour
+}
+
+// Run fetches latest exchange rates for all tenants.
+func (w *ExchangeRateWorker) Run(ctx context.Context) error {
+	// Get all tenant IDs (bypasses RLS — runs on workerPool)
+	tenantIDs, err := listAllTenantIDs(ctx, w.pool, w.logger)
+	if err != nil {
+		return err
+	}
+
+	totalFetched := 0
+	for _, tenantID := range tenantIDs {
+		if err := checkWorkerContext(ctx); err != nil {
+			return err
+		}
+		count, err := w.exchangeRateService.FetchNBPRates(ctx, tenantID, uuid.Nil, "0.0.0.0")
+		if err != nil {
+			w.logger.Error("exchange rate worker: fetch NBP rates", "tenant_id", tenantID, "error", err)
+			continue
+		}
+		totalFetched += count
+	}
+
+	w.logger.Info("exchange rate worker completed", "tenants", len(tenantIDs), "rates_fetched", totalFetched)
+	return nil
+}

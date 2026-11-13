@@ -1,0 +1,691 @@
+"use client";
+
+import { useState, useEffect, useRef, type FormEvent } from "react";
+import { toast } from "sonner";
+import { ShieldCheck, ShieldOff, Loader2, Copy, CheckCircle2, KeyRound } from "lucide-react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { apiClient, getErrorMessage } from "@/lib/api-client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import QRCode from "qrcode";
+import type {
+  APIToken,
+  CreatedAPIToken,
+  TwoFASetupResponse,
+  TwoFAStatusResponse,
+} from "@/types/api";
+import { useTranslations } from "next-intl";
+import { LanguageSelector } from "@/components/language-selector";
+import { useChangePassword } from "@/hooks/use-users";
+import { useAuthStore } from "@/lib/auth";
+
+function QRCodeCanvas({ data, size }: { data: string; size: number }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    if (canvasRef.current && data) {
+      QRCode.toCanvas(canvasRef.current, data, {
+        width: size,
+        margin: 1,
+        color: { dark: "#000000", light: "#ffffff" },
+      });
+    }
+  }, [data, size]);
+
+  return <canvas ref={canvasRef} />;
+}
+
+function getPasswordValidationError(
+  password: string,
+  t: (key: string) => string,
+): string | null {
+  if (password.length < 8) return t("passwordTooShort");
+  if (password.length > 72) return t("passwordTooLong");
+  if (!/[A-Z]/.test(password)) return t("passwordNeedsUppercase");
+  if (!/[a-z]/.test(password)) return t("passwordNeedsLowercase");
+  if (!/[0-9]/.test(password)) return t("passwordNeedsDigit");
+  return null;
+}
+
+export default function SecuritySettingsPage() {
+  const t = useTranslations("settings");
+  const ts = useTranslations("settings.security");
+  const tc = useTranslations("common");
+  const queryClient = useQueryClient();
+  const username = useAuthStore((state) => state.user?.email ?? "");
+  const isOwner = useAuthStore((state) => state.user?.role === "owner");
+  const [showSetupDialog, setShowSetupDialog] = useState(false);
+  const [showDisableDialog, setShowDisableDialog] = useState(false);
+  const [setupData, setSetupData] = useState<TwoFASetupResponse | null>(null);
+  const [verifyCode, setVerifyCode] = useState("");
+  const [disablePassword, setDisablePassword] = useState("");
+  const [disableCode, setDisableCode] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
+  const [secretCopied, setSecretCopied] = useState(false);
+
+  const { data: status, isLoading } = useQuery({
+    queryKey: ["2fa-status"],
+    queryFn: () => apiClient<TwoFAStatusResponse>("/v1/auth/2fa/status"),
+  });
+
+  const setupMutation = useMutation({
+    mutationFn: () =>
+      apiClient<TwoFASetupResponse>("/v1/auth/2fa/setup", { method: "POST" }),
+    onSuccess: (data) => {
+      setSetupData(data);
+      setShowSetupDialog(true);
+    },
+    onError: (error) => {
+      toast.error(getErrorMessage(error));
+    },
+  });
+
+  const verifyMutation = useMutation({
+    mutationFn: (code: string) =>
+      apiClient("/v1/auth/2fa/verify", {
+        method: "POST",
+        body: JSON.stringify({ code }),
+      }),
+    onSuccess: () => {
+      toast.success(t("twoFactorAuthEnabled"));
+      setShowSetupDialog(false);
+      setSetupData(null);
+      setVerifyCode("");
+      queryClient.invalidateQueries({ queryKey: ["2fa-status"] });
+    },
+    onError: (error) => {
+      toast.error(getErrorMessage(error));
+      setVerifyCode("");
+    },
+  });
+
+  const disableMutation = useMutation({
+    mutationFn: (data: { password: string; code: string }) =>
+      apiClient("/v1/auth/2fa/disable", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      toast.success(t("twoFactorAuthDisabled"));
+      setShowDisableDialog(false);
+      setDisablePassword("");
+      setDisableCode("");
+      queryClient.invalidateQueries({ queryKey: ["2fa-status"] });
+    },
+    onError: (error) => {
+      toast.error(getErrorMessage(error));
+    },
+  });
+
+  const changePasswordMutation = useChangePassword();
+  const newPasswordError = newPassword
+    ? getPasswordValidationError(newPassword, ts)
+    : null;
+  const confirmPasswordError =
+    confirmNewPassword && newPassword !== confirmNewPassword
+      ? ts("passwordMismatch")
+      : null;
+  const canChangePassword =
+    currentPassword.length > 0 &&
+    newPassword.length > 0 &&
+    confirmNewPassword.length > 0 &&
+    !newPasswordError &&
+    !confirmPasswordError &&
+    !changePasswordMutation.isPending;
+
+  const handleChangePassword = (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+
+    const validationError = getPasswordValidationError(newPassword, ts);
+    if (!currentPassword) {
+      toast.error(ts("currentPasswordRequired"));
+      return;
+    }
+    if (validationError) {
+      toast.error(validationError);
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      toast.error(ts("passwordMismatch"));
+      return;
+    }
+
+    changePasswordMutation.mutate(
+      {
+        current_password: currentPassword,
+        new_password: newPassword,
+      },
+      {
+        onSuccess: () => {
+          toast.success(ts("passwordChanged"));
+          setCurrentPassword("");
+          setNewPassword("");
+          setConfirmNewPassword("");
+        },
+        onError: (error) => {
+          toast.error(getErrorMessage(error));
+        },
+      },
+    );
+  };
+
+  const copySecret = async () => {
+    if (setupData?.secret) {
+      await navigator.clipboard.writeText(setupData.secret);
+      setSecretCopied(true);
+      setTimeout(() => setSecretCopied(false), 2000);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-bold">{ts("title")}</h1>
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto max-w-4xl space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold">{ts("title")}</h1>
+        <p className="text-muted-foreground">
+          {t("zarzadzajUstawieniamiBezpieczenstwaKonta")}
+        </p>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <KeyRound className="h-5 w-5" />
+            {ts("passwordTitle")}
+          </CardTitle>
+          <CardDescription>
+            {ts("passwordDescription")}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form className="space-y-4" onSubmit={handleChangePassword}>
+            <input
+              type="text"
+              name="username"
+              autoComplete="username"
+              value={username}
+              hidden
+              readOnly
+            />
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="space-y-2">
+                <Label htmlFor="current-password">{ts("currentPassword")}</Label>
+                <Input
+                  id="current-password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="new-password">{ts("newPassword")}</Label>
+                <Input
+                  id="new-password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                />
+                {newPasswordError && (
+                  <p className="text-sm text-destructive">{newPasswordError}</p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="confirm-new-password">{ts("confirmNewPassword")}</Label>
+                <Input
+                  id="confirm-new-password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={confirmNewPassword}
+                  onChange={(e) => setConfirmNewPassword(e.target.value)}
+                />
+                {confirmPasswordError && (
+                  <p className="text-sm text-destructive">{confirmPasswordError}</p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <Button type="submit" disabled={!canChangePassword}>
+                {changePasswordMutation.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
+                {ts("changePassword")}
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ShieldCheck className="h-5 w-5" />
+            {ts("twoFaTitle")}
+          </CardTitle>
+          <CardDescription>
+            {t("dodatkowaWarstwaZabezpieczenDlaTwojegoKontaWymaga")}
+            {ts("authenticatorApp")}
+            {t("kazdymLogowaniu")}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="space-y-1">
+              <p className="text-sm font-medium">{ts("statusLabel")}</p>
+              {status?.enabled ? (
+                <div className="flex items-center gap-2">
+                  <Badge variant="default" className="bg-green-600">
+                    {ts("twoFaActive")}
+                  </Badge>
+                  {status.verified_at && (
+                    <span className="text-xs text-muted-foreground">
+                      {ts("activatedAt")}{" "}
+                      {new Date(status.verified_at).toLocaleDateString("pl-PL")}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <Badge variant="secondary">{tc("disabled")}</Badge>
+              )}
+            </div>
+            <div>
+              {status?.enabled ? (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setShowDisableDialog(true)}
+                >
+                  <ShieldOff className="mr-2 h-4 w-4" />
+                  {ts("disable2fa")}
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  onClick={() => setupMutation.mutate()}
+                  disabled={setupMutation.isPending}
+                >
+                  {setupMutation.isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="mr-2 h-4 w-4" />
+                  )}
+                  {ts("enable2fa")}
+                </Button>
+              )}
+            </div>
+          </div>
+
+          <Separator />
+
+          <div className="rounded-lg bg-muted/50 p-4">
+            <h4 className="text-sm font-medium mb-2">
+              {t("howTwoFactorAuthWorks")}
+            </h4>
+            <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
+              <li>{t("zainstalujAplikacjeUwierzytelniajacaGoogleAuthenti")}</li>
+              <li>{t("clickEnable2faAndScanQrCode")}</li>
+              <li>{t("wpisz6cyfrowyKodZAplikacjiAbyPotwierdzic")}</li>
+              <li>{t("przyKazdymLogowaniuBedzieszProszonyOKodZAplikacji")}</li>
+            </ol>
+          </div>
+        </CardContent>
+      </Card>
+
+      {isOwner ? <APITokensCard /> : null}
+
+      {/* Language */}
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("language")}</CardTitle>
+          <CardDescription>
+            {t("languageDescription")}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <LanguageSelector />
+        </CardContent>
+      </Card>
+
+      {/* Setup Dialog */}
+      <Dialog open={showSetupDialog} onOpenChange={setShowSetupDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{ts("setupTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("zeskanujKodQrWAplikacjiUwierzytelniajacejLub")}
+            </DialogDescription>
+          </DialogHeader>
+
+          {setupData && (
+            <div className="space-y-4">
+              {/* QR Code rendered client-side (no external service) */}
+              <div className="flex justify-center">
+                <div className="rounded-lg border bg-white p-4">
+                  <QRCodeCanvas data={setupData.qr_url} size={200} />
+                </div>
+              </div>
+
+              {/* Manual secret */}
+              <div className="space-y-2">
+                <Label>{t("kluczReczny")}</Label>
+                <div className="flex gap-2">
+                  <Input
+                    readOnly
+                    value={setupData.secret}
+                    className="font-mono text-sm"
+                  />
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={copySecret}
+                  >
+                    {secretCopied ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-600" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                  </Button>
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Verification */}
+              <div className="space-y-2">
+                <Label htmlFor="verify-code">{ts("verificationCode")}</Label>
+                <Input
+                  id="verify-code"
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="000000"
+                  maxLength={6}
+                  value={verifyCode}
+                  onChange={(e) =>
+                    setVerifyCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+                  }
+                  className="text-center text-lg tracking-widest font-mono"
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t("wpisz6cyfrowyKodZAplikacjiUwierzytelniajacejAby")}
+                  {t("potwierdzicKonfiguracje")}
+                </p>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowSetupDialog(false);
+                setSetupData(null);
+                setVerifyCode("");
+              }}
+            >
+              {ts("cancelButton")}
+            </Button>
+            <Button
+              onClick={() => verifyMutation.mutate(verifyCode)}
+              disabled={verifyCode.length !== 6 || verifyMutation.isPending}
+            >
+              {verifyMutation.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : null}
+              {t("confirmAndEnable")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Disable Dialog */}
+      <Dialog open={showDisableDialog} onOpenChange={setShowDisableDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("disableTwoFactorAuth")}</DialogTitle>
+            <DialogDescription>
+              {t("enterPasswordAndCurrent2faCode")}
+              {t("twoFactorAccountLessSecure")}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="disable-password">{ts("password")}</Label>
+              <Input
+                id="disable-password"
+                type="password"
+                value={disablePassword}
+                onChange={(e) => setDisablePassword(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="disable-code">{ts("twoFaCode")}</Label>
+              <Input
+                id="disable-code"
+                type="text"
+                inputMode="numeric"
+                placeholder="000000"
+                maxLength={6}
+                value={disableCode}
+                onChange={(e) =>
+                  setDisableCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+                }
+                className="text-center text-lg tracking-widest font-mono"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowDisableDialog(false);
+                setDisablePassword("");
+                setDisableCode("");
+              }}
+            >
+              {ts("cancelButton")}
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() =>
+                disableMutation.mutate({
+                  password: disablePassword,
+                  code: disableCode,
+                })
+              }
+              disabled={
+                !disablePassword ||
+                disableCode.length !== 6 ||
+                disableMutation.isPending
+              }
+            >
+              {disableMutation.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : null}
+              {ts("disable2fa")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function APITokensCard() {
+  const ts = useTranslations("settings.security");
+  const queryClient = useQueryClient();
+  const [name, setName] = useState("");
+  const [createdToken, setCreatedToken] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const { data: tokens, isLoading } = useQuery({
+    queryKey: ["api-tokens"],
+    queryFn: () => apiClient<APIToken[]>("/v1/api-tokens"),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: (tokenName: string) =>
+      apiClient<CreatedAPIToken>("/v1/api-tokens", {
+        method: "POST",
+        body: JSON.stringify({ name: tokenName }),
+      }),
+    onSuccess: (data) => {
+      setCreatedToken(data.token);
+      setName("");
+      toast.success(ts("apiTokensCreatedToast"));
+      queryClient.invalidateQueries({ queryKey: ["api-tokens"] });
+    },
+    onError: (error) => {
+      toast.error(getErrorMessage(error));
+    },
+  });
+
+  const revokeMutation = useMutation({
+    mutationFn: (id: string) =>
+      apiClient(`/v1/api-tokens/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      toast.success(ts("apiTokensRevoked"));
+      queryClient.invalidateQueries({ queryKey: ["api-tokens"] });
+    },
+    onError: (error) => {
+      toast.error(getErrorMessage(error));
+    },
+  });
+
+  const copyCreated = async () => {
+    if (!createdToken) return;
+    await navigator.clipboard.writeText(createdToken);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <KeyRound className="h-5 w-5" />
+          {ts("apiTokensTitle")}
+        </CardTitle>
+        <CardDescription>{ts("apiTokensDescription")}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <form
+          className="flex flex-col gap-3 sm:flex-row sm:items-end"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (name.trim()) {
+              createMutation.mutate(name.trim());
+            }
+          }}
+        >
+          <div className="space-y-2 flex-1">
+            <Label htmlFor="api-token-name">{ts("apiTokensName")}</Label>
+            <Input
+              id="api-token-name"
+              value={name}
+              placeholder={ts("apiTokensNamePlaceholder")}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+          <Button type="submit" disabled={!name.trim() || createMutation.isPending}>
+            {createMutation.isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : null}
+            {ts("apiTokensCreate")}
+          </Button>
+        </form>
+
+        {createdToken ? (
+          <div className="space-y-2 rounded-lg border bg-muted/50 p-4">
+            <p className="text-sm font-medium">{ts("apiTokensCreatedOnce")}</p>
+            <div className="flex gap-2">
+              <Input readOnly value={createdToken} className="font-mono text-sm" />
+              <Button type="button" variant="outline" size="icon" onClick={copyCreated}>
+                {copied ? (
+                  <CheckCircle2 className="h-4 w-4 text-green-600" />
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {isLoading ? (
+          <div className="flex justify-center py-4">
+            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : !tokens || tokens.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{ts("apiTokensEmpty")}</p>
+        ) : (
+          <div className="space-y-2">
+            {tokens.map((token) => (
+              <div
+                key={token.id}
+                className="flex flex-col gap-2 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">{token.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {ts("apiTokensCreated")}{" "}
+                    {new Date(token.created_at).toLocaleString()}
+                    {" · "}
+                    {ts("apiTokensLastUsed")}{" "}
+                    {token.last_used_at
+                      ? new Date(token.last_used_at).toLocaleString()
+                      : ts("apiTokensNeverUsed")}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  disabled={revokeMutation.isPending}
+                  onClick={() => revokeMutation.mutate(token.id)}
+                >
+                  {ts("apiTokensRevoke")}
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}

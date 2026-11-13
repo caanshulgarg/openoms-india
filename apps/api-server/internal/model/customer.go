@@ -1,0 +1,133 @@
+package model
+
+import (
+	"encoding/json"
+	"errors"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
+
+// Customer represents a buyer associated with one or more orders.
+type Customer struct {
+	ID                     uuid.UUID       `json:"id"`
+	TenantID               uuid.UUID       `json:"tenant_id"`
+	Email                  *string         `json:"email,omitempty"`
+	Phone                  *string         `json:"phone,omitempty"`
+	Name                   string          `json:"name"`
+	CompanyName            *string         `json:"company_name,omitempty"`
+	NIP                    *string         `json:"nip,omitempty"`
+	DefaultShippingAddress json.RawMessage `json:"default_shipping_address,omitempty"`
+	DefaultBillingAddress  json.RawMessage `json:"default_billing_address,omitempty"`
+	Tags                   []string        `json:"tags"`
+	Notes                  *string         `json:"notes,omitempty"`
+	TotalOrders            int             `json:"total_orders"`
+	TotalSpent             float64         `json:"total_spent"`
+	PriceListID            *uuid.UUID      `json:"price_list_id,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	UpdatedAt              time.Time       `json:"updated_at"`
+}
+
+// CreateCustomerRequest is the payload for creating a new customer.
+type CreateCustomerRequest struct {
+	Email                  *string         `json:"email,omitempty"`
+	Phone                  *string         `json:"phone,omitempty"`
+	Name                   string          `json:"name"`
+	CompanyName            *string         `json:"company_name,omitempty"`
+	NIP                    *string         `json:"nip,omitempty"`
+	DefaultShippingAddress json.RawMessage `json:"default_shipping_address,omitempty"`
+	DefaultBillingAddress  json.RawMessage `json:"default_billing_address,omitempty"`
+	Tags                   []string        `json:"tags,omitempty"`
+	Notes                  *string         `json:"notes,omitempty"`
+}
+
+// Validate validates the create customer request.
+func (r *CreateCustomerRequest) Validate() error {
+	if strings.TrimSpace(r.Name) == "" {
+		return errors.New("name is required")
+	}
+	if err := validateMaxLength("name", r.Name, 500); err != nil {
+		return err
+	}
+	if err := validateMaxLengthPtr("email", r.Email, 255); err != nil {
+		return err
+	}
+	if r.Email != nil && *r.Email != "" && !emailRegex.MatchString(*r.Email) {
+		return errors.New("invalid email format")
+	}
+	if err := validateMaxLengthPtr("phone", r.Phone, 50); err != nil {
+		return err
+	}
+	if err := validateMaxLengthPtr("company_name", r.CompanyName, 500); err != nil {
+		return err
+	}
+	if err := validateMaxLengthPtr("nip", r.NIP, 20); err != nil {
+		return err
+	}
+	if err := validateMaxLengthPtr("notes", r.Notes, 5000); err != nil {
+		return err
+	}
+	return nil
+}
+
+// UpdateCustomerRequest is the payload for updating an existing customer.
+type UpdateCustomerRequest struct {
+	Email                  *string         `json:"email,omitempty"`
+	Phone                  *string         `json:"phone,omitempty"`
+	Name                   *string         `json:"name,omitempty"`
+	CompanyName            *string         `json:"company_name,omitempty"`
+	NIP                    *string         `json:"nip,omitempty"`
+	DefaultShippingAddress json.RawMessage `json:"default_shipping_address,omitempty"`
+	DefaultBillingAddress  json.RawMessage `json:"default_billing_address,omitempty"`
+	Tags                   *[]string       `json:"tags,omitempty"`
+	Notes                  *string         `json:"notes,omitempty"`
+	PriceListID            *uuid.UUID      `json:"price_list_id,omitempty"`
+}
+
+// Validate validates the update customer request.
+func (r *UpdateCustomerRequest) Validate() error {
+	if r.Email == nil && r.Phone == nil && r.Name == nil &&
+		r.CompanyName == nil && r.NIP == nil &&
+		r.DefaultShippingAddress == nil && r.DefaultBillingAddress == nil &&
+		r.Tags == nil && r.Notes == nil && r.PriceListID == nil {
+		return errors.New("at least one field must be provided")
+	}
+	if r.Name != nil {
+		if strings.TrimSpace(*r.Name) == "" {
+			return errors.New("name cannot be empty")
+		}
+		if err := validateMaxLength("name", *r.Name, 500); err != nil {
+			return err
+		}
+	}
+	if err := validateMaxLengthPtr("email", r.Email, 255); err != nil {
+		return err
+	}
+	if r.Email != nil && *r.Email != "" && !emailRegex.MatchString(*r.Email) {
+		return errors.New("invalid email format")
+	}
+	if err := validateMaxLengthPtr("phone", r.Phone, 50); err != nil {
+		return err
+	}
+	if err := validateMaxLengthPtr("company_name", r.CompanyName, 500); err != nil {
+		return err
+	}
+	if err := validateMaxLengthPtr("nip", r.NIP, 20); err != nil {
+		return err
+	}
+	if err := validateMaxLengthPtr("notes", r.Notes, 5000); err != nil {
+		return err
+	}
+	return nil
+}
+
+// CustomerListFilter holds query parameters for listing customers.
+type CustomerListFilter struct {
+	Search *string
+	Tags   *string
+	PaginationParams
+}

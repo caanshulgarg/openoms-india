@@ -1,0 +1,1392 @@
+package handler
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"maps"
+	"net/http"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/openoms-org/openoms/apps/api-server/internal/database"
+	"github.com/openoms-org/openoms/apps/api-server/internal/middleware"
+	"github.com/openoms-org/openoms/apps/api-server/internal/model"
+	"github.com/openoms-org/openoms/apps/api-server/internal/netutil"
+	"github.com/openoms-org/openoms/apps/api-server/internal/repository"
+	"github.com/openoms-org/openoms/apps/api-server/internal/service"
+)
+
+// SettingsHandler handles tenant settings endpoints.
+type SettingsHandler struct {
+	tenantRepo   repository.TenantRepo
+	auditRepo    repository.AuditRepo
+	categoryRepo repository.ProductCategoryRepo
+	emailService *service.EmailService
+	smsService   *service.SMSService
+	pool         *pgxpool.Pool
+}
+
+// NewSettingsHandler creates a new SettingsHandler.
+func NewSettingsHandler(tenantRepo repository.TenantRepo, auditRepo repository.AuditRepo, categoryRepo repository.ProductCategoryRepo, emailService *service.EmailService, smsService *service.SMSService, pool *pgxpool.Pool) *SettingsHandler {
+	return &SettingsHandler{tenantRepo: tenantRepo, auditRepo: auditRepo, categoryRepo: categoryRepo, emailService: emailService, smsService: smsService, pool: pool}
+}
+
+// getSettingsSection reads a specific section from the tenant's JSON settings blob.
+// If the section or settings don't exist, dest is left at its zero value.
+func (h *SettingsHandler) getSettingsSection(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, key string, dest any) error {
+	_, err := h.getSettingsSectionExists(ctx, tx, tenantID, key, dest)
+	return err
+}
+
+// getSettingsSectionExists reads a specific section and returns whether the key existed.
+func (h *SettingsHandler) getSettingsSectionExists(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, key string, dest any) (bool, error) {
+	settings, err := h.tenantRepo.GetSettings(ctx, tx, tenantID)
+	if err != nil {
+		return false, err
+	}
+
+	if settings == nil {
+		return false, nil
+	}
+
+	var allSettings map[string]json.RawMessage
+	if unmarshalErr := json.Unmarshal(settings, &allSettings); unmarshalErr != nil {
+		slog.Warn("failed to unmarshal tenant settings", "error", unmarshalErr)
+		return false, nil //nolint:nilerr // treat unparseable settings as empty
+	}
+
+	raw, ok := allSettings[key]
+	if !ok {
+		return false, nil
+	}
+
+	if unmarshalErr := json.Unmarshal(raw, dest); unmarshalErr != nil {
+		slog.Warn("failed to unmarshal settings section", "key", key, "error", unmarshalErr)
+	}
+	return true, nil
+}
+
+// updateSettingsSection merges a value into the tenant's JSON settings blob under the given key,
+// persists it, and writes an audit log entry.
+func (h *SettingsHandler) updateSettingsSection(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, key string, value any) error {
+	existing, err := h.tenantRepo.GetSettings(ctx, tx, tenantID)
+	if err != nil {
+		return err
+	}
+
+	var allSettings map[string]json.RawMessage
+	if err := json.Unmarshal(existing, &allSettings); err != nil {
+		allSettings = make(map[string]json.RawMessage)
+	}
+
+	valueJSON, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	allSettings[key] = valueJSON
+
+	newSettings, err := json.Marshal(allSettings)
+	if err != nil {
+		return err
+	}
+
+	return h.tenantRepo.UpdateSettings(ctx, tx, tenantID, newSettings)
+}
+
+// GetEmailSettings returns the tenant's email delivery configuration.
+func (h *SettingsHandler) GetEmailSettings(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	emailCfg := model.EmailSettings{
+		SMTPPort: 587,
+		NotifyOn: []string{"confirmed", "shipped", "delivered", "cancelled", "refunded"},
+	}
+
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		return h.getSettingsSection(r.Context(), tx, tenantID, "email", &emailCfg)
+	})
+	if err != nil {
+		writeServerError(w, "failed to load settings", err)
+		return
+	}
+
+	// Mask password
+	if emailCfg.SMTPPass != "" {
+		emailCfg.SMTPPass = "••••••"
+	}
+
+	writeJSON(w, http.StatusOK, emailCfg)
+}
+
+// UpdateEmailSettings replaces the tenant's email delivery configuration.
+func (h *SettingsHandler) UpdateEmailSettings(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	var emailCfg model.EmailSettings
+	if err := json.NewDecoder(r.Body).Decode(&emailCfg); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := emailCfg.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	actorID := middleware.UserIDFromContext(r.Context())
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		// If password is masked, keep the existing one
+		if emailCfg.SMTPPass == "••••••" {
+			var oldEmail model.EmailSettings
+			if err := h.getSettingsSection(r.Context(), tx, tenantID, "email", &oldEmail); err != nil {
+				slog.Error("failed to load existing email settings for password preservation", "error", err, "tenant_id", tenantID)
+			}
+			emailCfg.SMTPPass = oldEmail.SMTPPass
+		}
+
+		if err := h.updateSettingsSection(r.Context(), tx, tenantID, "email", emailCfg); err != nil {
+			return err
+		}
+		return h.auditRepo.Log(r.Context(), tx, model.AuditEntry{
+			TenantID:   tenantID,
+			UserID:     actorID,
+			Action:     "settings.email_updated",
+			EntityType: "settings",
+			EntityID:   tenantID,
+			IPAddress:  clientIP(r),
+		})
+	})
+	if err != nil {
+		writeServerError(w, "failed to save settings", err)
+		return
+	}
+
+	// Mask password in response
+	if emailCfg.SMTPPass != "" {
+		emailCfg.SMTPPass = "••••••"
+	}
+	writeJSON(w, http.StatusOK, emailCfg)
+}
+
+// GetCompanySettings returns the tenant's company profile settings.
+func (h *SettingsHandler) GetCompanySettings(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	var companyCfg model.CompanySettings
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		return h.getSettingsSection(r.Context(), tx, tenantID, "company", &companyCfg)
+	})
+	if err != nil {
+		writeServerError(w, "failed to load settings", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, companyCfg)
+}
+
+// UpdateCompanySettings replaces the tenant's company profile settings.
+func (h *SettingsHandler) UpdateCompanySettings(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+	actorID := middleware.UserIDFromContext(r.Context())
+
+	// Read the raw request body so we can merge it onto existing settings.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+
+	// Quick JSON validity check before starting a transaction
+	if !json.Valid(rawBody) {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	err = database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		// Load existing company settings first so that fields not present in the
+		// request body are preserved (merge instead of overwrite).
+		var companyCfg model.CompanySettings
+		if err := h.getSettingsSection(r.Context(), tx, tenantID, "company", &companyCfg); err != nil {
+			return err
+		}
+
+		// Unmarshal the request onto the existing struct — only provided fields
+		// are overwritten; omitted fields keep their current values.
+		if err := json.Unmarshal(rawBody, &companyCfg); err != nil {
+			return service.NewValidationError(fmt.Errorf("invalid request body: %w", err))
+		}
+
+		if err := h.updateSettingsSection(r.Context(), tx, tenantID, "company", companyCfg); err != nil {
+			return err
+		}
+		return h.auditRepo.Log(r.Context(), tx, model.AuditEntry{
+			TenantID:   tenantID,
+			UserID:     actorID,
+			Action:     "settings.company_updated",
+			EntityType: "settings",
+			EntityID:   tenantID,
+			IPAddress:  clientIP(r),
+		})
+	})
+	if err != nil {
+		if isValidationError(err) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeServerError(w, "failed to save settings", err)
+		return
+	}
+
+	// Re-read final state to return to the client
+	var finalCfg model.CompanySettings
+	if err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		return h.getSettingsSection(r.Context(), tx, tenantID, "company", &finalCfg)
+	}); err != nil {
+		writeServerError(w, "failed to reload settings", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, finalCfg)
+}
+
+// GetOrderStatuses returns the tenant's custom order status configuration.
+func (h *SettingsHandler) GetOrderStatuses(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	config := model.DefaultOrderStatusConfig()
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		var loaded model.OrderStatusConfig
+		if err := h.getSettingsSection(r.Context(), tx, tenantID, "order_statuses", &loaded); err != nil {
+			return err
+		}
+		if len(loaded.Statuses) > 0 {
+			config = loaded
+		}
+		return nil
+	})
+
+	if err != nil {
+		writeServerError(w, "failed to load order statuses", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, config)
+}
+
+// UpdateOrderStatuses replaces the tenant's custom order status configuration.
+func (h *SettingsHandler) UpdateOrderStatuses(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	var config model.OrderStatusConfig
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// Validate: no empty keys, no duplicate keys
+	keys := make(map[string]bool)
+	for _, s := range config.Statuses {
+		if s.Key == "" || s.Label == "" {
+			writeError(w, http.StatusBadRequest, "status key and label are required")
+			return
+		}
+		if keys[s.Key] {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("duplicate status key: %s", s.Key))
+			return
+		}
+		keys[s.Key] = true
+	}
+
+	// Validate: all transition targets reference existing statuses
+	for from, targets := range config.Transitions {
+		if !keys[from] {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("transition from unknown status: %s", from))
+			return
+		}
+		for _, to := range targets {
+			if !keys[to] {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("transition to unknown status: %s", to))
+				return
+			}
+		}
+	}
+
+	actorID := middleware.UserIDFromContext(r.Context())
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		if err := h.updateSettingsSection(r.Context(), tx, tenantID, "order_statuses", config); err != nil {
+			return err
+		}
+		return h.auditRepo.Log(r.Context(), tx, model.AuditEntry{
+			TenantID:   tenantID,
+			UserID:     actorID,
+			Action:     "settings.order_statuses_updated",
+			EntityType: "settings",
+			EntityID:   tenantID,
+			IPAddress:  clientIP(r),
+		})
+	})
+
+	if err != nil {
+		writeServerError(w, "failed to save order statuses", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, config)
+}
+
+// GetCustomFields returns the tenant's custom field definitions.
+func (h *SettingsHandler) GetCustomFields(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	config := model.CustomFieldsConfig{Fields: []model.CustomFieldDef{}}
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		var loaded model.CustomFieldsConfig
+		if err := h.getSettingsSection(r.Context(), tx, tenantID, "custom_fields", &loaded); err != nil {
+			return err
+		}
+		if len(loaded.Fields) > 0 {
+			config = loaded
+		}
+		return nil
+	})
+
+	if err != nil {
+		writeServerError(w, "failed to load custom fields", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, config)
+}
+
+// UpdateCustomFields replaces the tenant's custom field definitions.
+func (h *SettingsHandler) UpdateCustomFields(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	var config model.CustomFieldsConfig
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// Validate: no empty keys or labels, no duplicate keys, valid types
+	keys := make(map[string]bool)
+	for _, f := range config.Fields {
+		if f.Key == "" || f.Label == "" {
+			writeError(w, http.StatusBadRequest, "field key and label are required")
+			return
+		}
+		if keys[f.Key] {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("duplicate field key: %s", f.Key))
+			return
+		}
+		keys[f.Key] = true
+		if !model.IsValidFieldType(f.Type) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid field type: %s", f.Type))
+			return
+		}
+		if f.Type == "select" && len(f.Options) == 0 {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("select field %q must have at least 1 option", f.Key))
+			return
+		}
+	}
+
+	actorID := middleware.UserIDFromContext(r.Context())
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		if err := h.updateSettingsSection(r.Context(), tx, tenantID, "custom_fields", config); err != nil {
+			return err
+		}
+		return h.auditRepo.Log(r.Context(), tx, model.AuditEntry{
+			TenantID:   tenantID,
+			UserID:     actorID,
+			Action:     "settings.custom_fields_updated",
+			EntityType: "settings",
+			EntityID:   tenantID,
+			IPAddress:  clientIP(r),
+		})
+	})
+
+	if err != nil {
+		writeServerError(w, "failed to save custom fields", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, config)
+}
+
+// GetProductCategories returns the tenant's product categories.
+func (h *SettingsHandler) GetProductCategories(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	config := model.DefaultProductCategoriesConfig()
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		categories, err := h.categoryRepo.List(r.Context(), tx, model.CategoryListFilter{})
+		if err != nil {
+			return err
+		}
+		defs := make([]model.CategoryDef, 0, len(categories))
+		for _, cat := range categories {
+			defs = append(defs, model.CategoryDef{
+				Key:      cat.Slug,
+				Label:    cat.Name,
+				Color:    cat.Color,
+				Position: cat.Position,
+			})
+		}
+		if len(defs) > 0 {
+			config.Categories = defs
+		}
+		return nil
+	})
+
+	if err != nil {
+		writeServerError(w, "failed to load product categories", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, config)
+}
+
+// UpdateProductCategories replaces the tenant's product categories.
+func (h *SettingsHandler) UpdateProductCategories(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	var config model.ProductCategoriesConfig
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// Validate: no empty keys, no empty labels, no duplicate keys
+	keys := make(map[string]bool)
+	for _, c := range config.Categories {
+		if c.Key == "" || c.Label == "" {
+			writeError(w, http.StatusBadRequest, "category key and label are required")
+			return
+		}
+		if keys[c.Key] {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("duplicate category key: %s", c.Key))
+			return
+		}
+		keys[c.Key] = true
+	}
+
+	actorID := middleware.UserIDFromContext(r.Context())
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		if err := h.updateSettingsSection(r.Context(), tx, tenantID, "product_categories", config); err != nil {
+			return err
+		}
+		return h.auditRepo.Log(r.Context(), tx, model.AuditEntry{
+			TenantID:   tenantID,
+			UserID:     actorID,
+			Action:     "settings.product_categories_updated",
+			EntityType: "settings",
+			EntityID:   tenantID,
+			IPAddress:  clientIP(r),
+		})
+	})
+
+	if err != nil {
+		writeServerError(w, "failed to save product categories", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, config)
+}
+
+// GetWebhooks returns the tenant's outgoing webhook configuration.
+func (h *SettingsHandler) GetWebhooks(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	config := model.DefaultWebhookConfig()
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		var loaded model.WebhookConfig
+		if err := h.getSettingsSection(r.Context(), tx, tenantID, "webhooks", &loaded); err != nil {
+			return err
+		}
+		if len(loaded.Endpoints) > 0 {
+			config = loaded
+		}
+		return nil
+	})
+
+	if err != nil {
+		writeServerError(w, "failed to load webhook settings", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, config)
+}
+
+// UpdateWebhooks replaces the tenant's outgoing webhook configuration.
+func (h *SettingsHandler) UpdateWebhooks(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	var config model.WebhookConfig
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// Validate: each endpoint must have non-empty name, URL, at least one event; no duplicate IDs
+	ids := make(map[string]bool)
+	for _, ep := range config.Endpoints {
+		if ep.Name == "" {
+			writeError(w, http.StatusBadRequest, "endpoint name is required")
+			return
+		}
+		if ep.URL == "" {
+			writeError(w, http.StatusBadRequest, "endpoint URL is required")
+			return
+		}
+		if len(ep.Events) == 0 {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("endpoint %q must have at least one event", ep.Name))
+			return
+		}
+		if ep.ID != "" {
+			if ids[ep.ID] {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("duplicate endpoint ID: %s", ep.ID))
+				return
+			}
+			ids[ep.ID] = true
+		}
+
+		// SSRF protection: reject private/internal webhook URLs
+		if netutil.IsPrivateURL(ep.URL) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("endpoint URL %q resolves to a private/internal address", ep.URL))
+			return
+		}
+	}
+
+	actorID := middleware.UserIDFromContext(r.Context())
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		if err := h.updateSettingsSection(r.Context(), tx, tenantID, "webhooks", config); err != nil {
+			return err
+		}
+		return h.auditRepo.Log(r.Context(), tx, model.AuditEntry{
+			TenantID:   tenantID,
+			UserID:     actorID,
+			Action:     "settings.webhooks_updated",
+			EntityType: "settings",
+			EntityID:   tenantID,
+			IPAddress:  clientIP(r),
+		})
+	})
+
+	if err != nil {
+		writeServerError(w, "failed to save webhook settings", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, config)
+}
+
+// GetOnboardingSettings returns the onboarding wizard state for the tenant.
+func (h *SettingsHandler) GetOnboardingSettings(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	var cfg model.OnboardingSettings
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		return h.getSettingsSection(r.Context(), tx, tenantID, "onboarding", &cfg)
+	})
+	if err != nil {
+		writeServerError(w, "failed to load onboarding settings", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+// UpdateOnboardingSettings saves the onboarding wizard state (e.g. dismissed).
+func (h *SettingsHandler) UpdateOnboardingSettings(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+	actorID := middleware.UserIDFromContext(r.Context())
+
+	var cfg model.OnboardingSettings
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// Validate step ranges.
+	if cfg.CurrentStep < 0 || cfg.CurrentStep > 4 {
+		writeError(w, http.StatusBadRequest, "current_step must be between 0 and 4")
+		return
+	}
+	for _, s := range cfg.CompletedSteps {
+		if s < 1 || s > 4 {
+			writeError(w, http.StatusBadRequest, "completed_steps values must be between 1 and 4")
+			return
+		}
+	}
+	for _, s := range cfg.SkippedSteps {
+		if s < 1 || s > 4 {
+			writeError(w, http.StatusBadRequest, "skipped_steps values must be between 1 and 4")
+			return
+		}
+	}
+
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		if err := h.updateSettingsSection(r.Context(), tx, tenantID, "onboarding", cfg); err != nil {
+			return err
+		}
+		return h.auditRepo.Log(r.Context(), tx, model.AuditEntry{
+			TenantID:   tenantID,
+			UserID:     actorID,
+			Action:     "settings.onboarding_updated",
+			EntityType: "settings",
+			EntityID:   tenantID,
+			IPAddress:  clientIP(r),
+		})
+	})
+	if err != nil {
+		writeServerError(w, "failed to save onboarding settings", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+// GetOnboardingStatus returns the current onboarding wizard state for the tenant.
+// Existing tenants without an "onboarding" key are treated as completed (backward compat).
+// New tenants (created after the wizard feature) will have the key set during registration.
+func (h *SettingsHandler) GetOnboardingStatus(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	var cfg model.OnboardingSettings
+	keyExists := false
+
+	if h.pool == nil {
+		slog.Error("GetOnboardingStatus: database pool is nil, returning defaults")
+	} else {
+		err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+			var exists bool
+			var err error
+			exists, err = h.getSettingsSectionExists(r.Context(), tx, tenantID, "onboarding", &cfg)
+			keyExists = exists
+			return err
+		})
+		if err != nil {
+			writeServerError(w, "failed to load onboarding status", err)
+			return
+		}
+	}
+
+	// Existing tenants have no "onboarding" key — treat as completed so they
+	// are not redirected to the wizard.
+	if !keyExists {
+		cfg = model.OnboardingSettings{
+			Completed:      true,
+			CurrentStep:    4,
+			CompletedSteps: []int{1, 2, 3, 4},
+			SkippedSteps:   []int{},
+		}
+		writeJSON(w, http.StatusOK, cfg)
+		return
+	}
+
+	// Apply defaults for new tenants (zero value from missing/empty JSON).
+	if cfg.CurrentStep == 0 {
+		cfg.CurrentStep = 1
+	}
+	if cfg.CompletedSteps == nil {
+		cfg.CompletedSteps = []int{}
+	}
+	if cfg.SkippedSteps == nil {
+		cfg.SkippedSteps = []int{}
+	}
+
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+// UpdateOnboardingStep marks a single onboarding step as completed or skipped.
+// Step must be 1-4; step 1 cannot be skipped; action must be "completed" or "skipped".
+func (h *SettingsHandler) UpdateOnboardingStep(w http.ResponseWriter, r *http.Request) {
+	stepStr := chi.URLParam(r, "step")
+	step, err := strconv.Atoi(stepStr)
+	if err != nil || step < 1 || step > 4 {
+		writeError(w, http.StatusBadRequest, "step must be a number between 1 and 4")
+		return
+	}
+
+	var req struct {
+		Action string `json:"action"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Action != "completed" && req.Action != "skipped" {
+		writeError(w, http.StatusBadRequest, "action must be 'completed' or 'skipped'")
+		return
+	}
+
+	if step == 1 && req.Action == "skipped" {
+		writeError(w, http.StatusBadRequest, "step 1 is required and cannot be skipped")
+		return
+	}
+
+	tenantID := middleware.TenantIDFromContext(r.Context())
+	actorID := middleware.UserIDFromContext(r.Context())
+
+	if h.pool == nil {
+		writeServerError(w, "failed to update onboarding step", fmt.Errorf("no database connection"))
+		return
+	}
+
+	err = database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		var cfg model.OnboardingSettings
+		if err := h.getSettingsSection(r.Context(), tx, tenantID, "onboarding", &cfg); err != nil {
+			return err
+		}
+
+		// Apply defaults for new tenants.
+		if cfg.CurrentStep == 0 {
+			cfg.CurrentStep = 1
+		}
+		if cfg.CompletedSteps == nil {
+			cfg.CompletedSteps = []int{}
+		}
+		if cfg.SkippedSteps == nil {
+			cfg.SkippedSteps = []int{}
+		}
+
+		switch req.Action {
+		case "completed":
+			if !slices.Contains(cfg.CompletedSteps, step) {
+				cfg.CompletedSteps = append(cfg.CompletedSteps, step)
+			}
+			cfg.SkippedSteps = slices.DeleteFunc(cfg.SkippedSteps, func(v int) bool { return v == step })
+		case "skipped":
+			if !slices.Contains(cfg.SkippedSteps, step) {
+				cfg.SkippedSteps = append(cfg.SkippedSteps, step)
+			}
+			cfg.CompletedSteps = slices.DeleteFunc(cfg.CompletedSteps, func(v int) bool { return v == step })
+		}
+
+		// Advance current_step pointer.
+		if step >= cfg.CurrentStep && step < 4 {
+			cfg.CurrentStep = step + 1
+		}
+
+		if err := h.updateSettingsSection(r.Context(), tx, tenantID, "onboarding", cfg); err != nil {
+			return err
+		}
+		return h.auditRepo.Log(r.Context(), tx, model.AuditEntry{
+			TenantID:   tenantID,
+			UserID:     actorID,
+			Action:     "onboarding.step_" + req.Action,
+			EntityType: "settings",
+			EntityID:   tenantID,
+			IPAddress:  clientIP(r),
+		})
+	})
+	if err != nil {
+		writeServerError(w, "failed to update onboarding step", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"step": step, "action": req.Action})
+}
+
+// CompleteOnboarding marks the entire onboarding wizard as done.
+// Step 1 must be completed before this can be called.
+func (h *SettingsHandler) CompleteOnboarding(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+	actorID := middleware.UserIDFromContext(r.Context())
+
+	if h.pool == nil {
+		writeServerError(w, "failed to complete onboarding", fmt.Errorf("no database connection"))
+		return
+	}
+
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		var cfg model.OnboardingSettings
+		if err := h.getSettingsSection(r.Context(), tx, tenantID, "onboarding", &cfg); err != nil {
+			return err
+		}
+
+		if !slices.Contains(cfg.CompletedSteps, 1) {
+			return service.NewValidationError(fmt.Errorf("step 1 must be completed before finishing onboarding"))
+		}
+
+		cfg.Completed = true
+		cfg.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+
+		if err := h.updateSettingsSection(r.Context(), tx, tenantID, "onboarding", cfg); err != nil {
+			return err
+		}
+		return h.auditRepo.Log(r.Context(), tx, model.AuditEntry{
+			TenantID:   tenantID,
+			UserID:     actorID,
+			Action:     "onboarding.completed",
+			EntityType: "settings",
+			EntityID:   tenantID,
+			IPAddress:  clientIP(r),
+		})
+	})
+	if err != nil {
+		if isValidationError(err) {
+			writeError(w, http.StatusBadRequest, "step 1 must be completed before finishing onboarding")
+			return
+		}
+		writeServerError(w, "failed to complete onboarding", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": "onboarding completed"})
+}
+
+// SendTestEmail sends a test email using the tenant's email settings.
+func (h *SettingsHandler) SendTestEmail(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	var req struct {
+		ToEmail string `json:"to_email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ToEmail == "" {
+		writeError(w, http.StatusBadRequest, "to_email is required")
+		return
+	}
+
+	// Load email settings
+	var emailCfg model.EmailSettings
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		if err := h.getSettingsSection(r.Context(), tx, tenantID, "email", &emailCfg); err != nil {
+			return err
+		}
+		if emailCfg.SMTPHost == "" {
+			return fmt.Errorf("email settings not configured")
+		}
+		return nil
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := h.emailService.SendTestEmail(r.Context(), emailCfg, req.ToEmail); err != nil {
+		slog.Error("failed to send test email", "error", err, "tenant_id", tenantID)
+		writeError(w, http.StatusUnprocessableEntity, "Failed to send test email. Check SMTP configuration.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Test email sent successfully"})
+}
+
+// GetInvoicingSettings returns the tenant's invoicing provider configuration.
+func (h *SettingsHandler) GetInvoicingSettings(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	var invoicingCfg map[string]any
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		return h.getSettingsSection(r.Context(), tx, tenantID, "invoicing", &invoicingCfg)
+	})
+	if err != nil {
+		writeServerError(w, "failed to load invoicing settings", err)
+		return
+	}
+
+	if invoicingCfg == nil {
+		invoicingCfg = map[string]any{
+			"provider":              "",
+			"auto_create_on_status": []string{},
+			"default_tax_rate":      23,
+			"payment_days":          14,
+			"credentials":           map[string]any{},
+		}
+	}
+
+	writeJSON(w, http.StatusOK, maskInvoicingSettings(invoicingCfg))
+}
+
+// UpdateInvoicingSettings replaces the tenant's invoicing provider configuration.
+func (h *SettingsHandler) UpdateInvoicingSettings(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+	actorID := middleware.UserIDFromContext(r.Context())
+
+	var invoicingCfg map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&invoicingCfg); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if v, ok := invoicingCfg["default_tax_rate"]; ok {
+		if rate, ok := v.(float64); ok && (rate < 0 || rate > 100) {
+			writeError(w, http.StatusBadRequest, "default_tax_rate must be between 0 and 100")
+			return
+		}
+	}
+
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		var existingCfg map[string]any
+		if err := h.getSettingsSection(r.Context(), tx, tenantID, "invoicing", &existingCfg); err != nil {
+			return err
+		}
+		if credentials, ok := invoicingCfg["credentials"]; ok && existingCfg != nil {
+			invoicingCfg["credentials"] = preserveMaskedSecretValues(credentials, existingCfg["credentials"])
+		}
+
+		if err := h.updateSettingsSection(r.Context(), tx, tenantID, "invoicing", invoicingCfg); err != nil {
+			return err
+		}
+		return h.auditRepo.Log(r.Context(), tx, model.AuditEntry{
+			TenantID:   tenantID,
+			UserID:     actorID,
+			Action:     "settings.invoicing_updated",
+			EntityType: "settings",
+			EntityID:   tenantID,
+			IPAddress:  clientIP(r),
+		})
+	})
+	if err != nil {
+		writeServerError(w, "failed to save invoicing settings", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, maskInvoicingSettings(invoicingCfg))
+}
+
+// GetSMSSettings returns the tenant's SMS provider configuration.
+func (h *SettingsHandler) GetSMSSettings(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	smsCfg := model.SMSSettings{
+		NotifyOn:  []string{"shipped", "delivered", "out_for_delivery"},
+		Templates: map[string]string{},
+	}
+
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		return h.getSettingsSection(r.Context(), tx, tenantID, "sms", &smsCfg)
+	})
+	if err != nil {
+		writeServerError(w, "failed to load SMS settings", err)
+		return
+	}
+
+	// Mask API token
+	if smsCfg.APIToken != "" {
+		smsCfg.APIToken = "••••••"
+	}
+
+	writeJSON(w, http.StatusOK, smsCfg)
+}
+
+// UpdateSMSSettings replaces the tenant's SMS provider configuration.
+func (h *SettingsHandler) UpdateSMSSettings(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	var smsCfg model.SMSSettings
+	if err := json.NewDecoder(r.Body).Decode(&smsCfg); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := smsCfg.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	actorID := middleware.UserIDFromContext(r.Context())
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		// If API token is masked, keep the existing one
+		if smsCfg.APIToken == "••••••" {
+			var oldSMS model.SMSSettings
+			if err := h.getSettingsSection(r.Context(), tx, tenantID, "sms", &oldSMS); err != nil {
+				slog.Error("failed to load existing SMS settings for token preservation", "error", err, "tenant_id", tenantID)
+			}
+			smsCfg.APIToken = oldSMS.APIToken
+		}
+
+		if err := h.updateSettingsSection(r.Context(), tx, tenantID, "sms", smsCfg); err != nil {
+			return err
+		}
+		return h.auditRepo.Log(r.Context(), tx, model.AuditEntry{
+			TenantID:   tenantID,
+			UserID:     actorID,
+			Action:     "settings.sms_updated",
+			EntityType: "settings",
+			EntityID:   tenantID,
+			IPAddress:  clientIP(r),
+		})
+	})
+	if err != nil {
+		writeServerError(w, "failed to save SMS settings", err)
+		return
+	}
+
+	// Mask API token in response
+	if smsCfg.APIToken != "" {
+		smsCfg.APIToken = "••••••"
+	}
+	writeJSON(w, http.StatusOK, smsCfg)
+}
+
+// GetInventorySettings returns the tenant's inventory management settings.
+func (h *SettingsHandler) GetInventorySettings(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	inventoryCfg := model.InventorySettings{}
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		return h.getSettingsSection(r.Context(), tx, tenantID, "inventory", &inventoryCfg)
+	})
+	if err != nil {
+		writeServerError(w, "failed to load inventory settings", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, inventoryCfg)
+}
+
+// UpdateInventorySettings replaces the tenant's inventory management settings.
+func (h *SettingsHandler) UpdateInventorySettings(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+	actorID := middleware.UserIDFromContext(r.Context())
+
+	var inventoryCfg model.InventorySettings
+	if err := json.NewDecoder(r.Body).Decode(&inventoryCfg); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		if err := h.updateSettingsSection(r.Context(), tx, tenantID, "inventory", inventoryCfg); err != nil {
+			return err
+		}
+		return h.auditRepo.Log(r.Context(), tx, model.AuditEntry{
+			TenantID:   tenantID,
+			UserID:     actorID,
+			Action:     "settings.inventory_updated",
+			EntityType: "settings",
+			EntityID:   tenantID,
+			IPAddress:  clientIP(r),
+		})
+	})
+	if err != nil {
+		writeServerError(w, "failed to save inventory settings", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, inventoryCfg)
+}
+
+// SendTestSMS sends a test SMS using the tenant's SMS provider settings.
+func (h *SettingsHandler) SendTestSMS(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	var req struct {
+		Phone string `json:"phone"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Phone == "" {
+		writeError(w, http.StatusBadRequest, "phone is required")
+		return
+	}
+
+	// Load SMS settings
+	var smsCfg model.SMSSettings
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		if err := h.getSettingsSection(r.Context(), tx, tenantID, "sms", &smsCfg); err != nil {
+			return err
+		}
+		if smsCfg.APIToken == "" {
+			return fmt.Errorf("SMS settings not configured")
+		}
+		return nil
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := h.smsService.SendTestSMS(r.Context(), smsCfg, req.Phone); err != nil {
+		slog.Error("failed to send test SMS", "error", err, "tenant_id", tenantID)
+		writeError(w, http.StatusUnprocessableEntity, "Failed to send test SMS. Check configuration.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Test SMS sent successfully"})
+}
+
+// ExportSettings exports all tenant settings as a JSON file download.
+func (h *SettingsHandler) ExportSettings(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+
+	var settings json.RawMessage
+	err := database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		var err error
+		settings, err = h.tenantRepo.GetSettings(r.Context(), tx, tenantID)
+		return err
+	})
+	if err != nil {
+		writeServerError(w, "failed to load settings", err)
+		return
+	}
+
+	if settings == nil {
+		settings = json.RawMessage("{}")
+	}
+
+	// Mask sensitive fields before export
+	settings = maskSensitiveSettings(settings)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", `attachment; filename="settings-export.json"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(settings)
+}
+
+// maskSensitiveSettings redacts credentials and secrets from settings JSON before export.
+func maskSensitiveSettings(raw json.RawMessage) json.RawMessage {
+	var allSettings map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &allSettings); err != nil {
+		return raw
+	}
+
+	// Mask email SMTP password
+	if emailRaw, ok := allSettings["email"]; ok {
+		var emailCfg map[string]any
+		if err := json.Unmarshal(emailRaw, &emailCfg); err == nil {
+			if _, has := emailCfg["smtp_pass"]; has {
+				emailCfg["smtp_pass"] = "**REDACTED**"
+			}
+			if masked, err := json.Marshal(emailCfg); err == nil {
+				allSettings["email"] = masked
+			}
+		}
+	}
+
+	// Mask SMS API token
+	if smsRaw, ok := allSettings["sms"]; ok {
+		var smsCfg map[string]any
+		if err := json.Unmarshal(smsRaw, &smsCfg); err == nil {
+			if _, has := smsCfg["api_token"]; has {
+				smsCfg["api_token"] = "**REDACTED**"
+			}
+			if masked, err := json.Marshal(smsCfg); err == nil {
+				allSettings["sms"] = masked
+			}
+		}
+	}
+
+	// Mask invoicing credentials
+	if invRaw, ok := allSettings["invoicing"]; ok {
+		var invCfg map[string]any
+		if err := json.Unmarshal(invRaw, &invCfg); err == nil {
+			if _, has := invCfg["credentials"]; has {
+				invCfg["credentials"] = map[string]any{}
+			}
+			if masked, err := json.Marshal(invCfg); err == nil {
+				allSettings["invoicing"] = masked
+			}
+		}
+	}
+
+	// Mask KSeF token
+	if ksefRaw, ok := allSettings["ksef"]; ok {
+		var ksefCfg map[string]any
+		if err := json.Unmarshal(ksefRaw, &ksefCfg); err == nil {
+			if _, has := ksefCfg["token"]; has {
+				ksefCfg["token"] = "**REDACTED**"
+			}
+			if masked, err := json.Marshal(ksefCfg); err == nil {
+				allSettings["ksef"] = masked
+			}
+		}
+	}
+
+	// Mask webhook endpoint secrets
+	if whRaw, ok := allSettings["webhooks"]; ok {
+		var whCfg model.WebhookConfig
+		if err := json.Unmarshal(whRaw, &whCfg); err == nil {
+			for i := range whCfg.Endpoints {
+				if whCfg.Endpoints[i].Secret != "" {
+					whCfg.Endpoints[i].Secret = "**REDACTED**"
+				}
+			}
+			if masked, err := json.Marshal(whCfg); err == nil {
+				allSettings["webhooks"] = masked
+			}
+		}
+	}
+
+	result, err := json.Marshal(allSettings)
+	if err != nil {
+		return raw
+	}
+	return result
+}
+
+// ImportSettings replaces all tenant settings from a JSON import payload.
+func (h *SettingsHandler) ImportSettings(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromContext(r.Context())
+	actorID := middleware.UserIDFromContext(r.Context())
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+
+	if !json.Valid(rawBody) {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	// Parse incoming sections
+	var incoming map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &incoming); err != nil {
+		writeError(w, http.StatusBadRequest, "request body must be a JSON object")
+		return
+	}
+
+	// SSRF protection: validate webhook URLs in imported settings
+	if whRaw, ok := incoming["webhooks"]; ok {
+		var whCfg model.WebhookConfig
+		if err := json.Unmarshal(whRaw, &whCfg); err == nil {
+			for _, ep := range whCfg.Endpoints {
+				if ep.URL != "" && netutil.IsPrivateURL(ep.URL) {
+					writeError(w, http.StatusBadRequest, fmt.Sprintf("imported webhook URL %q resolves to a private/internal address", ep.URL))
+					return
+				}
+			}
+		}
+	}
+
+	var updatedSettings json.RawMessage
+	err = database.WithTenant(r.Context(), h.pool, tenantID, func(tx pgx.Tx) error {
+		existing, err := h.tenantRepo.GetSettings(r.Context(), tx, tenantID)
+		if err != nil {
+			return err
+		}
+
+		var allSettings map[string]json.RawMessage
+		if existing != nil {
+			if err := json.Unmarshal(existing, &allSettings); err != nil {
+				allSettings = make(map[string]json.RawMessage)
+			}
+		} else {
+			allSettings = make(map[string]json.RawMessage)
+		}
+
+		// Merge: overwrite provided sections, keep others
+		maps.Copy(allSettings, incoming)
+
+		newSettings, err := json.Marshal(allSettings)
+		if err != nil {
+			return err
+		}
+
+		if err := h.tenantRepo.UpdateSettings(r.Context(), tx, tenantID, newSettings); err != nil {
+			return err
+		}
+
+		updatedSettings = maskSensitiveSettings(newSettings)
+
+		return h.auditRepo.Log(r.Context(), tx, model.AuditEntry{
+			TenantID:   tenantID,
+			UserID:     actorID,
+			Action:     "settings.imported",
+			EntityType: "settings",
+			EntityID:   tenantID,
+			IPAddress:  clientIP(r),
+		})
+	})
+	if err != nil {
+		writeServerError(w, "failed to import settings", err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(updatedSettings)
+}
+
+func maskInvoicingSettings(cfg map[string]any) map[string]any {
+	if cfg == nil {
+		return nil
+	}
+	masked := make(map[string]any, len(cfg))
+	for key, value := range cfg {
+		if key == "credentials" {
+			masked[key] = maskSecretValue(value)
+			continue
+		}
+		masked[key] = value
+	}
+	return masked
+}
+
+func maskSecretValue(value any) any {
+	switch v := value.(type) {
+	case string:
+		if v == "" {
+			return ""
+		}
+		return "••••••"
+	case map[string]any:
+		masked := make(map[string]any, len(v))
+		for key, child := range v {
+			masked[key] = maskSecretValue(child)
+		}
+		return masked
+	case []any:
+		masked := make([]any, len(v))
+		for i, child := range v {
+			masked[i] = maskSecretValue(child)
+		}
+		return masked
+	default:
+		return v
+	}
+}
+
+func preserveMaskedSecretValues(incoming any, existing any) any {
+	switch v := incoming.(type) {
+	case string:
+		if !isMaskedSecretValue(v) {
+			return v
+		}
+		if old, ok := existing.(string); ok {
+			return old
+		}
+		return ""
+	case map[string]any:
+		preserved := make(map[string]any, len(v))
+		existingMap, _ := existing.(map[string]any)
+		for key, child := range v {
+			var oldChild any
+			if existingMap != nil {
+				oldChild = existingMap[key]
+			}
+			preserved[key] = preserveMaskedSecretValues(child, oldChild)
+		}
+		return preserved
+	case []any:
+		preserved := make([]any, len(v))
+		existingSlice, _ := existing.([]any)
+		for i, child := range v {
+			var oldChild any
+			if i < len(existingSlice) {
+				oldChild = existingSlice[i]
+			}
+			preserved[i] = preserveMaskedSecretValues(child, oldChild)
+		}
+		return preserved
+	default:
+		return v
+	}
+}
+
+func isMaskedSecretValue(value string) bool {
+	return value == "••••••" || value == "******" || value == "**REDACTED**"
+}

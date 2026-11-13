@@ -1,0 +1,197 @@
+# OpenOMS — Production deployment
+# Usage:
+#   docker-compose -f docker-compose.prod.yml up -d --build
+#   docker-compose -f docker-compose.prod.yml logs -f
+#   docker-compose -f docker-compose.prod.yml down
+#
+# Prerequisites:
+#   - Copy .env.example to .env and fill in production values
+#   - Ensure POSTGRES_PASSWORD and JWT_SECRET are strong random values
+
+services:
+  # ── PostgreSQL ──────────────────────────────────────────────────
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: openoms
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: openoms
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openoms"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  postgres-bootstrap:
+    image: postgres:17-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: openoms
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD in .env}
+      POSTGRES_DB: openoms
+      POSTGRES_HOST: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - ./deploy/docker/postgres/init-app-role.sh:/usr/local/bin/init-app-role.sh:ro
+    networks:
+      - internal
+    entrypoint: ["/bin/sh", "/usr/local/bin/init-app-role.sh"]
+    restart: "no"
+
+  # ── Redis ───────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ── Database migrations ────────────────────────────────────────
+  # Runs golang-migrate, then exits. api-server waits for this.
+  # Built from source (Go 1.24 + distroless) to avoid CVEs in prebuilt image.
+  migrate:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.migrate
+    depends_on:
+      postgres-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      - internal
+    command: >
+      -path=/migrations
+      -database=postgres://openoms:${POSTGRES_PASSWORD}@postgres:5432/openoms?sslmode=disable
+      up
+    restart: "no"
+
+  # ── API server (Go) ────────────────────────────────────────────
+  api-server:
+    build:
+      context: .
+      dockerfile: apps/api-server/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      # NOTE: sslmode=disable is safe within Docker bridge network only.
+      DATABASE_URL: postgres://openoms_app:${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD in .env}@postgres:5432/openoms?sslmode=disable
+      # Privileged DSN for cross-tenant worker/webhook queries; keep DATABASE_URL least-privileged.
+      WORKER_DATABASE_URL: postgres://openoms:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/openoms?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in .env}
+      PORT: "8080"
+      ENV: production
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      BASE_URL: ${BASE_URL:-http://localhost:8080}
+      # Currency for orders created without one (default PLN). Set INR for India.
+      OPENOMS_DEFAULT_CURRENCY: ${OPENOMS_DEFAULT_CURRENCY:-}
+      # "client-ready" (default) exposes only production-verified providers;
+      # "full" also exposes controlled/beta ones (e.g. Shiprocket, Delhivery).
+      # Keep in sync with OPENOMS_DASHBOARD_SURFACE below.
+      OPENOMS_API_SURFACE: ${OPENOMS_API_SURFACE:-client-ready}
+      UPLOAD_DIR: /uploads
+      MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE:-10485760}
+      WORKERS_ENABLED: ${WORKERS_ENABLED:-true}
+      # Allegro
+      ALLEGRO_CLIENT_ID: ${ALLEGRO_CLIENT_ID:-}
+      ALLEGRO_CLIENT_SECRET: ${ALLEGRO_CLIENT_SECRET:-}
+      ALLEGRO_REDIRECT_URI: ${ALLEGRO_REDIRECT_URI:-}
+      ALLEGRO_WEBHOOK_SECRET: ${ALLEGRO_WEBHOOK_SECRET:-}
+      # InPost
+      INPOST_API_TOKEN: ${INPOST_API_TOKEN:-}
+      INPOST_ORGANIZATION_ID: ${INPOST_ORGANIZATION_ID:-}
+      INPOST_WEBHOOK_SECRET: ${INPOST_WEBHOOK_SECRET:-}
+      # Feature flags
+      FEATURE_ALLEGRO: ${FEATURE_ALLEGRO:-true}
+      FEATURE_INPOST: ${FEATURE_INPOST:-true}
+      # S3 (optional)
+      S3_ENABLED: ${S3_ENABLED:-false}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_REGION: ${S3_REGION:-eu-central-1}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-}
+      # AI (optional)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+    volumes:
+      - uploads:/uploads
+    networks:
+      - internal
+    ports:
+      - "${API_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── Dashboard (Next.js) ────────────────────────────────────────
+  dashboard:
+    build:
+      context: ./apps/dashboard
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+        DASHBOARD_API_PROXY_URL: ${DASHBOARD_API_PROXY_URL:-http://api-server:8080}
+        NEXT_PUBLIC_INPOST_GEOWIDGET_TOKEN: ${NEXT_PUBLIC_INPOST_GEOWIDGET_TOKEN:-}
+        NEXT_PUBLIC_DEFAULT_CURRENCY: ${NEXT_PUBLIC_DEFAULT_CURRENCY:-}
+        NEXT_PUBLIC_DEFAULT_COUNTRY: ${NEXT_PUBLIC_DEFAULT_COUNTRY:-}
+    environment:
+      # Runtime surface mode; keep in sync with OPENOMS_API_SURFACE.
+      OPENOMS_DASHBOARD_SURFACE: ${OPENOMS_DASHBOARD_SURFACE:-client-ready}
+    restart: unless-stopped
+    depends_on:
+      api-server:
+        condition: service_healthy
+    networks:
+      - internal
+    ports:
+      - "${DASHBOARD_PORT:-3000}:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/nodejs/bin/node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/login').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  uploads:
+    driver: local
+
+networks:
+  internal:
+    driver: bridge

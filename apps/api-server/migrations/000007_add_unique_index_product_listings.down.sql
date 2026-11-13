@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS idx_product_listings_product_integration;
+DROP INDEX IF EXISTS idx_product_listings_external_integration;
