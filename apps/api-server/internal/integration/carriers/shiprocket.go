@@ -150,6 +150,11 @@ func (p *ShiprocketProvider) resolveShiprocketCourier(serviceType string) (strin
 // CreateShipment creates a Shiprocket order, assigns a courier + AWB and
 // (unless disabled) schedules the pickup.
 func (p *ShiprocketProvider) CreateShipment(ctx context.Context, req integration.CarrierShipmentRequest) (*integration.CarrierShipmentResponse, error) {
+	resp, err := p.createShipment(ctx, req)
+	return resp, asCarrierUserError(err)
+}
+
+func (p *ShiprocketProvider) createShipment(ctx context.Context, req integration.CarrierShipmentRequest) (*integration.CarrierShipmentResponse, error) {
 	if p.settings.PickupLocation == "" {
 		return nil, fmt.Errorf("shiprocket: pickup location is not configured — set the pickup location nickname from your Shiprocket account in the integration settings")
 	}
@@ -298,6 +303,11 @@ func shiprocketItems(req integration.CarrierShipmentRequest, orderRef string, su
 
 // GetLabel generates the label for the shipment and downloads the PDF.
 func (p *ShiprocketProvider) GetLabel(ctx context.Context, externalID string, format string) ([]byte, error) {
+	data, err := p.getLabel(ctx, externalID, format)
+	return data, asCarrierUserError(err)
+}
+
+func (p *ShiprocketProvider) getLabel(ctx context.Context, externalID string, format string) ([]byte, error) {
 	if f := strings.ToLower(strings.TrimSpace(format)); f != "" && f != "pdf" {
 		return nil, fmt.Errorf("shiprocket: label format %q is not supported — Shiprocket labels are PDF only", format)
 	}

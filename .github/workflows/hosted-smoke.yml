@@ -90,6 +90,22 @@ jobs:
           echo "generate label: HTTP $(echo "$label" | tail -n1)"
           echo "$label" | head -n -1 | head -c 400; echo
 
+          echo "--- an invalid PIN is explained to the user, not hidden behind a generic error"
+          bad=$(curl -ks -X POST "${auth[@]}" "$api/orders" -d '{
+            "customer_name":"Ravi Kumar","customer_phone":"9876543210","total_amount":500,
+            "shipping_address":{"name":"Ravi Kumar","street":"1 Park Street","city":"Kolkata","postal_code":"7000","country":"IN"}}')
+          bad_ship=$(curl -ks -X POST "${auth[@]}" "$api/shipments" -d "{\"order_id\":\"$(echo "$bad" | jq -r .id)\",\"provider\":\"delhivery\"}")
+          resp=$(curl -ks -w '\n%{http_code}' -X POST "${auth[@]}" "$api/shipments/$(echo "$bad_ship" | jq -r .id)/label" -d '{"service_type":"surface","label_format":"pdf","weight_kg":0.5}')
+          echo "HTTP $(echo "$resp" | tail -n1): $(echo "$resp" | head -n -1 | head -c 300)"
+          test "$(echo "$resp" | tail -n1)" = "422"
+          echo "$resp" | grep -q '6-digit PIN'
+
+      - name: Server log for the label attempts
+        if: always()
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          sudo docker compose -f docker-compose.prod.yml -f deploy/india/docker-compose.hosted.yml logs --no-color api-server 2>/dev/null | grep -i 'label generation failed\|carrier' | tail -n 8 | cut -c1-600 || true
+
       - name: Logs on failure
         if: failure()
         run: |

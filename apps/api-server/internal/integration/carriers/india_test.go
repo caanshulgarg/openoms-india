@@ -1,7 +1,11 @@
 package carriers
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -195,5 +199,65 @@ func TestSettingFloat(t *testing.T) {
 		if err := json.Unmarshal([]byte(in), &v); err == nil {
 			t.Errorf("%s must be rejected, got %v", in, v.W)
 		}
+	}
+}
+
+func TestAsCarrierUserError(t *testing.T) {
+	if asCarrierUserError(nil) != nil {
+		t.Fatal("nil must stay nil")
+	}
+
+	var userErr *integration.CarrierUserError
+	plain := errors.New("delhivery: parcel weight is required")
+	marked := asCarrierUserError(plain)
+	if !errors.As(marked, &userErr) || marked.Error() != plain.Error() || !errors.Is(marked, plain) {
+		t.Fatalf("validation error must be marked and keep its message: %v", marked)
+	}
+	if again := asCarrierUserError(marked); again != marked {
+		t.Error("an already marked error must not be wrapped twice")
+	}
+	// The mark must survive the service layer's wrapping.
+	if !errors.As(fmt.Errorf("carrier create shipment: %w", marked), &userErr) {
+		t.Error("mark lost after wrapping")
+	}
+
+	transport := []error{
+		&url.Error{Op: "Post", URL: "https://track.delhivery.com/api/cmu/create.json", Err: errors.New("dial tcp: i/o timeout")},
+		fmt.Errorf("delhivery: create shipment: %w", context.DeadlineExceeded),
+		context.Canceled,
+	}
+	for _, err := range transport {
+		if errors.As(asCarrierUserError(err), &userErr) {
+			t.Errorf("transport error must not be user-facing: %v", err)
+		}
+	}
+}
+
+func TestProvidersMarkLabelErrorsAsUserFacing(t *testing.T) {
+	var userErr *integration.CarrierUserError
+
+	sr := newShiprocketTestProvider(&fakeShiprocket{}, shiprocketSettings{})
+	_, err := sr.CreateShipment(context.Background(), shiprocketSampleRequest())
+	if !errors.As(err, &userErr) || !strings.Contains(userErr.Error(), "pickup location is not configured") {
+		t.Errorf("shiprocket validation error not user-facing: %v", err)
+	}
+	sr = newShiprocketTestProvider(&fakeShiprocket{awbErr: errors.New("Recharge your wallet")}, shiprocketSettings{PickupLocation: "x"})
+	if _, err = sr.CreateShipment(context.Background(), shiprocketSampleRequest()); !errors.As(err, &userErr) {
+		t.Errorf("shiprocket carrier rejection not user-facing: %v", err)
+	}
+	if _, err = sr.GetLabel(context.Background(), "1:2", "zpl"); !errors.As(err, &userErr) {
+		t.Errorf("shiprocket label format error not user-facing: %v", err)
+	}
+
+	dl := newDelhiveryTestProvider(&fakeDelhivery{}, delhiverySettings{PickupLocation: "x"})
+	req := delhiverySampleRequest()
+	req.Receiver.PostalCode = "00-950"
+	if _, err = dl.CreateShipment(context.Background(), req); !errors.As(err, &userErr) {
+		t.Errorf("delhivery validation error not user-facing: %v", err)
+	}
+	timeout := &url.Error{Op: "Post", URL: "https://track.delhivery.com", Err: context.DeadlineExceeded}
+	dl = newDelhiveryTestProvider(&fakeDelhivery{createErr: timeout}, delhiverySettings{PickupLocation: "x"})
+	if _, err = dl.CreateShipment(context.Background(), delhiverySampleRequest()); err == nil || errors.As(err, &userErr) {
+		t.Errorf("delhivery timeout must stay a plain error: %v", err)
 	}
 }

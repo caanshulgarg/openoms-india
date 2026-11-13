@@ -128,6 +128,20 @@ type Rate struct {
 // certified real-time or contract-backed rating implementation.
 var ErrCarrierRatesNotImplemented = errors.New("carrier rates not implemented")
 
+// CarrierUserError marks a carrier error whose message is meant for the person
+// generating the label: an input problem they can fix (missing weight, invalid
+// PIN code, pickup location not configured) or a rejection stated by the
+// carrier (wallet balance, unknown warehouse). API handlers show its message
+// instead of a generic "failed to generate label".
+type CarrierUserError struct {
+	Err error
+}
+
+func (e *CarrierUserError) Error() string { return e.Err.Error() }
+
+// Unwrap returns the underlying error.
+func (e *CarrierUserError) Unwrap() error { return e.Err }
+
 // CarrierProvider defines the interface for carrier/shipping integrations
 // (e.g. InPost, DHL, DPD).
 type CarrierProvider interface {

@@ -1,8 +1,12 @@
 package carriers
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +45,27 @@ func (f *settingFloat) UnmarshalJSON(data []byte) error {
 	}
 	*f = settingFloat(v)
 	return nil
+}
+
+// asCarrierUserError marks an error from a label operation as user-facing
+// (see integration.CarrierUserError), so the dashboard shows what to fix.
+// Transport failures (timeouts, DNS, refused connections) are left unmarked:
+// they are not the user's to fix and keep the generic "try again" message.
+func asCarrierUserError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var userErr *integration.CarrierUserError
+	if errors.As(err, &userErr) {
+		return err
+	}
+	var urlErr *url.Error
+	var netErr net.Error
+	if errors.As(err, &urlErr) || errors.As(err, &netErr) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return err
+	}
+	return &integration.CarrierUserError{Err: err}
 }
 
 // istLocation is Indian Standard Time (UTC+05:30, no DST).

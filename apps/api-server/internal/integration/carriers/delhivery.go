@@ -144,6 +144,11 @@ func (p *DelhiveryProvider) resolveDelhiveryMode(serviceType string) (string, er
 
 // CreateShipment manifests a forward shipment; Delhivery assigns the waybill.
 func (p *DelhiveryProvider) CreateShipment(ctx context.Context, req integration.CarrierShipmentRequest) (*integration.CarrierShipmentResponse, error) {
+	resp, err := p.createShipment(ctx, req)
+	return resp, asCarrierUserError(err)
+}
+
+func (p *DelhiveryProvider) createShipment(ctx context.Context, req integration.CarrierShipmentRequest) (*integration.CarrierShipmentResponse, error) {
 	if p.settings.PickupLocation == "" {
 		return nil, fmt.Errorf("delhivery: pickup location is not configured — set the exact warehouse name from your Delhivery account in the integration settings")
 	}
@@ -265,6 +270,11 @@ func delhiveryProductsDesc(items []integration.CarrierItem) (desc string, units 
 
 // GetLabel fetches the packing slip (shipping label) PDF for a waybill.
 func (p *DelhiveryProvider) GetLabel(ctx context.Context, externalID string, format string) ([]byte, error) {
+	data, err := p.getLabel(ctx, externalID, format)
+	return data, asCarrierUserError(err)
+}
+
+func (p *DelhiveryProvider) getLabel(ctx context.Context, externalID string, format string) ([]byte, error) {
 	if f := strings.ToLower(strings.TrimSpace(format)); f != "" && f != "pdf" {
 		return nil, fmt.Errorf("delhivery: label format %q is not supported — Delhivery labels are PDF only", format)
 	}

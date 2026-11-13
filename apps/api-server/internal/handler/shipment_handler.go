@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	engine "github.com/openoms-org/openoms/packages/order-engine"
 
+	"github.com/openoms-org/openoms/apps/api-server/internal/integration"
 	"github.com/openoms-org/openoms/apps/api-server/internal/middleware"
 	"github.com/openoms-org/openoms/apps/api-server/internal/model"
 	"github.com/openoms-org/openoms/apps/api-server/internal/readiness"
@@ -322,6 +323,13 @@ func (h *ShipmentHandler) GenerateLabel(w http.ResponseWriter, r *http.Request) 
 				writeError(w, http.StatusBadRequest, err.Error())
 			} else {
 				slog.Error("label generation failed", "error", err)
+				// Carriers that classify their own errors: show the message as is
+				// (an input the user can fix, or the carrier's stated rejection).
+				var carrierUserErr *integration.CarrierUserError
+				if errors.As(err, &carrierUserErr) {
+					writeError(w, http.StatusUnprocessableEntity, carrierUserErr.Error())
+					return
+				}
 				// Extract carrier API error details for better user feedback
 				errMsg := err.Error()
 				switch {
