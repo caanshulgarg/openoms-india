@@ -1,0 +1,19 @@
+# Reverse proxy for a single-server OpenOMS deployment.
+#
+# OPENOMS_DOMAIN is the public host name. For a real host name Caddy obtains
+# and renews a Let's Encrypt certificate automatically; for "localhost" it
+# uses its own internal certificate (used by the smoke test).
+{$OPENOMS_DOMAIN} {
+	encode gzip
+
+	# API and WebSocket traffic goes straight to the Go server.
+	@api path /v1 /v1/* /health
+	handle @api {
+		reverse_proxy api-server:8080
+	}
+
+	# Everything else is the dashboard.
+	handle {
+		reverse_proxy dashboard:3000
+	}
+}

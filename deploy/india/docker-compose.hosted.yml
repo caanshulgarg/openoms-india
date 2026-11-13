@@ -1,0 +1,44 @@
+# Adds an HTTPS front door (Caddy) to docker-compose.prod.yml for a single
+# server. Used by deploy/india/install.sh:
+#
+#   docker compose -f docker-compose.prod.yml -f deploy/india/docker-compose.hosted.yml up -d --build
+#
+# The dashboard and API are served from ONE https origin:
+#   https://<OPENOMS_DOMAIN>/      -> dashboard
+#   https://<OPENOMS_DOMAIN>/v1/*  -> API (and WebSocket)
+#
+# install.sh sets API_PORT / DASHBOARD_PORT to 127.0.0.1-only bindings so the
+# plain-HTTP ports are not reachable from the internet.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      api-server:
+        condition: service_healthy
+      dashboard:
+        condition: service_started
+    environment:
+      OPENOMS_DOMAIN: ${OPENOMS_DOMAIN:?Set OPENOMS_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/india/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - internal
+
+  api-server:
+    environment:
+      # Only invited users can register; the first owner is created by install.sh.
+      REGISTRATION_MODE: ${REGISTRATION_MODE:-invite}
+      # Trust X-Forwarded-For from the Caddy container (Docker bridge ranges)
+      # so rate limiting and audit logs see the real client address.
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-172.16.0.0/12,192.168.0.0/16,10.0.0.0/8}
+
+volumes:
+  caddy_data:
+  caddy_config:

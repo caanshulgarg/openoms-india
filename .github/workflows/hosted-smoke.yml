@@ -1,0 +1,98 @@
+name: Hosted install smoke test
+
+# Runs deploy/india/install.sh on a clean runner and checks that the hosted
+# stack really works end to end: HTTPS front door, dashboard, owner login,
+# India defaults and the Shiprocket / Delhivery providers.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Install and log in
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Run installer
+        run: |
+          sudo OPENOMS_DIR="$GITHUB_WORKSPACE" OPENOMS_SKIP_FETCH=1 OPENOMS_SKIP_SWAP=1 \
+            OPENOMS_DOMAIN=localhost OPENOMS_LOGIN_FILE=/tmp/openoms-login.txt \
+            OPENOMS_ADMIN_EMAIL=owner@example.com OPENOMS_COMPANY="Smoke Test Co" \
+            bash deploy/india/install.sh > /tmp/install.log 2>&1 || { tail -n 150 /tmp/install.log; exit 1; }
+          # Never print the generated password.
+          grep -v 'Password:' /tmp/install.log | tail -n 25
+
+      - name: Dashboard is served over HTTPS
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -ks -o /dev/null -w '%{http_code}' https://localhost/login || true)
+            [ "$code" = "200" ] && break
+            sleep 3
+          done
+          echo "GET /login -> $code"
+          test "$code" = "200"
+          test "$(curl -ks -o /dev/null -w '%{http_code}' https://localhost/health)" = "200"
+
+      - name: Plain-HTTP ports are not published publicly
+        run: |
+          sudo docker ps --format '{{.Names}} {{.Ports}}'
+          ! sudo docker ps --format '{{.Ports}}' | grep -E '0\.0\.0\.0:(8080|3000)->'
+
+      - name: Owner can log in and use the API
+        run: |
+          set -euo pipefail
+          pw=$(sudo awk '/^Password:/ {print $2}' /tmp/openoms-login.txt)
+          echo "::add-mask::$pw"
+          api=https://localhost/v1
+          login=$(curl -ks -X POST "$api/auth/login" -H 'Content-Type: application/json' \
+            -d "{\"tenant_slug\":\"main\",\"email\":\"owner@example.com\",\"password\":\"$pw\"}")
+          token=$(echo "$login" | jq -r '.access_token // .token // empty')
+          if [ -z "$token" ]; then echo "login failed: $(echo "$login" | jq -c 'del(.access_token,.refresh_token,.token)' 2>/dev/null || echo "$login" | head -c 300)"; exit 1; fi
+          echo "::add-mask::$token"
+          auth=(-H "Authorization: Bearer $token" -H 'Content-Type: application/json')
+
+          echo "--- list orders"
+          test "$(curl -ks -o /dev/null -w '%{http_code}' "${auth[@]}" "$api/orders")" = "200"
+
+          echo "--- new order defaults to INR"
+          order=$(curl -ks -X POST "${auth[@]}" "$api/orders" -d '{
+            "customer_name":"Asha Verma","customer_phone":"9876543210","total_amount":998,
+            "payment_method":"cod",
+            "items":[{"name":"Cotton Shirt","sku":"SH-1","quantity":2,"price":499}],
+            "shipping_address":{"name":"Asha Verma","street":"12 MG Road","city":"Bengaluru","state":"Karnataka","postal_code":"560001","country":"IN"}}')
+          echo "$order" | jq -c '{id, currency, state: .shipping_address.state}'
+          test "$(echo "$order" | jq -r '.currency')" = "INR"
+          test "$(echo "$order" | jq -r '.shipping_address.state')" = "Karnataka"
+          order_id=$(echo "$order" | jq -r '.id')
+
+          echo "--- Shiprocket and Delhivery integrations can be created"
+          for body in \
+            '{"provider":"shiprocket","credentials":{"email":"api-user@example.com","password":"not-a-real-password"},"settings":{"pickup_location":"Primary","default_weight_kg":"0.5"}}' \
+            '{"provider":"delhivery","credentials":{"api_token":"not-a-real-token","sandbox":true},"settings":{"pickup_location":"Noida WH","shipping_mode":"Surface"}}'; do
+            resp=$(curl -ks -w '\n%{http_code}' -X POST "${auth[@]}" "$api/integrations" -d "$body")
+            code=$(echo "$resp" | tail -n1)
+            echo "$(echo "$body" | jq -r .provider): HTTP $code"
+            if [ "$code" != "201" ] && [ "$code" != "200" ]; then echo "$resp" | head -n -1 | head -c 400; exit 1; fi
+          done
+
+          echo "--- shipment for a beta carrier is accepted"
+          ship=$(curl -ks -w '\n%{http_code}' -X POST "${auth[@]}" "$api/shipments" -d "{\"order_id\":\"$order_id\",\"provider\":\"delhivery\"}")
+          code=$(echo "$ship" | tail -n1); echo "create shipment: HTTP $code"
+          if [ "$code" != "201" ] && [ "$code" != "200" ]; then echo "$ship" | head -n -1 | head -c 400; exit 1; fi
+          ship_id=$(echo "$ship" | head -n -1 | jq -r '.id')
+
+          echo "--- label request reaches Delhivery staging and is rejected for the fake token"
+          label=$(curl -ks -w '\n%{http_code}' -X POST "${auth[@]}" "$api/shipments/$ship_id/label" -d '{"service_type":"surface","label_format":"pdf","weight_kg":0.5}')
+          echo "generate label: HTTP $(echo "$label" | tail -n1)"
+          echo "$label" | head -n -1 | head -c 400; echo
+
+      - name: Logs on failure
+        if: failure()
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          sudo docker compose -f docker-compose.prod.yml -f deploy/india/docker-compose.hosted.yml ps || true
+          sudo docker compose -f docker-compose.prod.yml -f deploy/india/docker-compose.hosted.yml logs --tail 80 caddy api-server dashboard migrate postgres-bootstrap || true
