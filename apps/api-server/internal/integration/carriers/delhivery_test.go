@@ -310,21 +310,22 @@ func TestDelhiveryGetLabel(t *testing.T) {
 	}
 }
 
-func scan(scanType, status, when, where, note string) struct {
+// scan builds a forward ("UD") scan entry.
+func scan(status, when, where, note string) struct {
 	ScanDetail delhivery.ScanDetail `json:"ScanDetail"`
 } {
 	return struct {
 		ScanDetail delhivery.ScanDetail `json:"ScanDetail"`
-	}{ScanDetail: delhivery.ScanDetail{ScanType: scanType, Scan: status, ScanDateTime: when, ScannedLocation: where, Instructions: note}}
+	}{ScanDetail: delhivery.ScanDetail{ScanType: "UD", Scan: status, ScanDateTime: when, ScannedLocation: where, Instructions: note}}
 }
 
 func TestDelhiveryGetTracking(t *testing.T) {
 	ship := delhivery.TrackedShipment{AWB: "111"}
 	ship.Scans = append(ship.Scans,
-		scan("UD", "Manifested", "2026-11-13T19:20:05.002", "Noida_WH (Uttar Pradesh)", "Consignment Manifested"),
-		scan("UD", "In Transit", "2026-11-14T09:10:00", "Noida_Sector63_PC (Uttar Pradesh)", "Shipment picked up"),
-		scan("UD", "", "2026-11-14T10:00:00", "", "blank scans are skipped"),
-		scan("UD", "Dispatched", "2026-11-16T09:00:00", "Bengaluru_Kormngla_D (Karnataka)", "Out for delivery"),
+		scan("Manifested", "2026-11-13T19:20:05.002", "Noida_WH (Uttar Pradesh)", "Consignment Manifested"),
+		scan("In Transit", "2026-11-14T09:10:00", "Noida_Sector63_PC (Uttar Pradesh)", "Shipment picked up"),
+		scan("", "2026-11-14T10:00:00", "", "blank scans are skipped"),
+		scan("Dispatched", "2026-11-16T09:00:00", "Bengaluru_Kormngla_D (Karnataka)", "Out for delivery"),
 	)
 	// The summary is ahead of the scan list: delivered.
 	ship.Status = delhivery.TrackStatus{Status: "Delivered", StatusType: "DL", StatusDateTime: "2026-11-16T14:02:11.767",
