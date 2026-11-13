@@ -22,6 +22,27 @@ You can connect both and pick per shipment.
 | Cancel | Cancels the Shiprocket order and frees the AWB | Cancels the waybill |
 | Rates | Live quote per courier | Estimate for Surface and Express |
 
+## Quick start: host it on one server
+
+On a fresh Ubuntu 22.04 or 24.04 server (4 GB RAM recommended; 2 GB works but
+the first build is slow), with ports 80 and 443 open, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/caanshulgarg/openoms-india/main/deploy/india/install.sh | sudo bash
+```
+
+The installer sets up Docker, generates secrets, starts the whole stack behind
+HTTPS, applies the India settings from section 1 and prints the web address and
+the owner login (also saved in `/root/openoms-login.txt`). Without a domain it
+uses a free `<server-ip>.sslip.io` address; to use your own, point the domain
+at the server first and run with `OPENOMS_DOMAIN=oms.example.com`. Running the
+command again updates the app and keeps your data and login.
+
+Back up `/opt/openoms-india/.env`: its `ENCRYPTION_KEY` protects the stored
+carrier credentials and cannot be recovered.
+
+With the installer you can skip section 1 and go straight to section 2.
+
 ## 1. Switch the deployment to India
 
 Add to `.env` (see `.env.example`):
